@@ -166,7 +166,10 @@ private fun RadarRoot(vm: RadarViewModel) {
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)
             )
     ) {
-        val twoPane = maxWidth >= TwoPaneBreakpoint
+        // BoxWithConstraintsScope es un DSL marker: dentro de Column/Row no se puede
+        // leer maxWidth con receptor implícito, así que se captura aquí.
+        val availableWidth = maxWidth
+        val twoPane = availableWidth >= TwoPaneBreakpoint
         val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         val chatVisible = twoPane || tab == TAB_CHAT
         val gated = state == LinkState.PERMISSIONS || state == LinkState.PAUSED
@@ -188,7 +191,7 @@ private fun RadarRoot(vm: RadarViewModel) {
                 roomText = roomText,
                 publicRoom = isPublicRoom(roomCode),
                 running = running,
-                showRoomText = maxWidth >= 400.dp,
+                showRoomText = availableWidth >= 400.dp,
                 onRoom = { showRoom = true },
                 onToggle = {
                     if (running) {
@@ -275,7 +278,7 @@ private fun RadarRoot(vm: RadarViewModel) {
                         }
 
                         if (twoPane) {
-                            val sidebar = (maxWidth * 0.4f).coerceIn(340.dp, 440.dp)
+                            val sidebar = (availableWidth * 0.4f).coerceIn(340.dp, 440.dp)
                             Row(modifier = Modifier.fillMaxSize()) {
                                 nearby(Modifier.width(sidebar).fillMaxHeight())
                                 VerticalDivider(color = PaneDivider)
