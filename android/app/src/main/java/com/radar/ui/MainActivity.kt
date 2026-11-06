@@ -101,6 +101,8 @@ private fun RadarRoot(vm: RadarViewModel) {
     val stats by session.stats.collectAsState()
     val roomCode by session.roomCode.collectAsState()
     val running by session.running.collectAsState()
+    val connectingTo by session.connectingTo.collectAsState()
+    val linkError by session.linkError.collectAsState()
 
     val required = remember { requiredPermissions() }
     var granted by remember {
@@ -186,7 +188,7 @@ private fun RadarRoot(vm: RadarViewModel) {
             }
         }
 
-        error?.let {
+        (linkError ?: error)?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
         }
@@ -249,6 +251,7 @@ private fun RadarRoot(vm: RadarViewModel) {
                 peers = peers,
                 scanning = scanning,
                 bluetoothOn = bluetoothOn,
+                connectingTo = connectingTo,
                 onConnect = { session.connect(it) },
                 onRetry = { startIfPossible() }
             )
@@ -288,6 +291,7 @@ private fun PeerList(
     peers: List<RadarPeer>,
     scanning: Boolean,
     bluetoothOn: Boolean,
+    connectingTo: String?,
     onConnect: (String) -> Unit,
     onRetry: () -> Unit
 ) {
@@ -340,8 +344,12 @@ private fun PeerList(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Button(onClick = { onConnect(peer.address) }) {
-                        Text("Conectar")
+                    val connecting = connectingTo == peer.address
+                    Button(
+                        onClick = { onConnect(peer.address) },
+                        enabled = !connecting && connectingTo == null
+                    ) {
+                        Text(if (connecting) "Conectando…" else "Conectar")
                     }
                 }
             }

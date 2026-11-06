@@ -79,7 +79,13 @@ class RadarGattClient(
             onDisconnected()
             return
         }
-        val newGatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        val newGatt = try {
+            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Sin permiso BLUETOOTH_CONNECT para conectar", e)
+            giveUp()
+            return
+        }
         if (newGatt == null) {
             Log.e(TAG, "connectGatt devolvió null")
             giveUp()
@@ -158,6 +164,14 @@ class RadarGattClient(
         onReady()
     }
 
+    /** Lectura del alias, ya con el CCCD habilitado (una operación por vez). */
+    @SuppressLint("MissingPermission")
+    private fun readProfile(g: BluetoothGatt) {
+        val profile = g.getService(RadarUuids.SERVICE)
+            ?.getCharacteristic(RadarUuids.PROFILE_CHAR) ?: return
+        g.readCharacteristic(profile)
+    }
+
     @SuppressLint("MissingPermission")
     private fun pump() {
         if (writing) return
@@ -230,9 +244,6 @@ class RadarGattClient(
             controlChar = service.getCharacteristic(RadarUuids.CONTROL_CHAR)
             messageChar = service.getCharacteristic(RadarUuids.MESSAGE_CHAR)
 
-            val profile = service.getCharacteristic(RadarUuids.PROFILE_CHAR)
-            if (profile != null) g.readCharacteristic(profile)
-
             val message = messageChar
             if (message == null) {
                 Log.e(TAG, "Falta el characteristic de mensajes")
@@ -240,14 +251,23 @@ class RadarGattClient(
                 return
             }
 
+            // El stack GATT solo admite una operación a la vez. Primero el CCCD
+            // (lo imprescindible para recibir); el perfil se lee después, en el
+            // callback del descriptor. Hacer ambas cosas acá pierde la segunda.
             g.setCharacteristicNotification(message, true)
             val cccd = message.getDescriptor(RadarUuids.CCCD)
             if (cccd != null) {
                 @Suppress("DEPRECATION")
                 cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 @Suppress("DEPRECATION")
-                g.writeDescriptor(cccd)
+                val started = g.writeDescriptor(cccd)
+                if (!started) {
+                    Log.e(TAG, "writeDescriptor rechazado por el stack")
+                    giveUp()
+                }
             } else {
+                Log.w(TAG, "El peer no expone CCCD; se sigue sin notificaciones")
+                readProfile(g)
                 fireReady()
             }
         }
@@ -257,8 +277,13 @@ class RadarGattClient(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
-            if (descriptor.uuid == RadarUuids.CCCD && status == BluetoothGatt.GATT_SUCCESS) {
+            if (descriptor.uuid != RadarUuids.CCCD) return
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                readProfile(g)
                 fireReady()
+            } else {
+                Log.e(TAG, "No se pudo habilitar notificaciones: status=$status")
+                giveUp()
             }
         }
 

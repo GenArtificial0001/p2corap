@@ -56,6 +56,14 @@ class RadarSessionManager(context: Context) {
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
+    /** Dirección a la que se está intentando conectar, para feedback en la UI. */
+    private val _connectingTo = MutableStateFlow<String?>(null)
+    val connectingTo: StateFlow<String?> = _connectingTo.asStateFlow()
+
+    /** Último error de conexión, visible para el usuario. */
+    private val _linkError = MutableStateFlow<String?>(null)
+    val linkError: StateFlow<String?> = _linkError.asStateFlow()
+
     private val crypto = MeshCrypto()
 
     /** Sala pública de fábrica: todos comparten la misma clave al iniciar. */
@@ -96,6 +104,7 @@ class RadarSessionManager(context: Context) {
 
     fun start() {
         _running.value = true
+        _linkError.value = null
         ble.clearError()
         ensureServer()
         RadarForegroundService.start(appContext)
@@ -106,8 +115,11 @@ class RadarSessionManager(context: Context) {
 
     fun stop() {
         _running.value = false
+        _connectingTo.value = null
+        _linkError.value = null
         clients.values.forEach { runCatching { it.close() } }
         clients.clear()
+        connecting.clear()
         waiting.clear()
         runCatching { server?.close() }
         server = null
@@ -122,9 +134,11 @@ class RadarSessionManager(context: Context) {
     // --------------------------------------------------------------- vínculos
 
     fun connect(address: String) {
+        _linkError.value = null
         if (address in clients || address in peers || address in connecting) return
 
         if (clients.size >= MAX_OUTGOING) {
+            _linkError.value = "Ya hay $MAX_OUTGOING conexiones; esperá un momento"
             if (address !in waiting) waiting.addLast(address)
             updateStats()
             return
@@ -134,11 +148,14 @@ class RadarSessionManager(context: Context) {
 
     private fun openClient(address: String) {
         connecting.add(address)
+        _connectingTo.value = address
 
         val gattClient = RadarGattClient(
             context = appContext,
             onReady = {
                 connecting.remove(address)
+                _connectingTo.value = null
+                _linkError.value = null
                 peers.add(address)
                 chat.setConnected(true)
                 updateStats()
@@ -146,7 +163,12 @@ class RadarSessionManager(context: Context) {
                 clients[address]?.sendControl(byteArrayOf(ControlOpcode.CONNECT_REQUEST))
             },
             onDisconnected = {
+                val wasPeer = address in peers
                 connecting.remove(address)
+                _connectingTo.value = null
+                if (!wasPeer) {
+                    _linkError.value = "No se pudo conectar con $address"
+                }
                 onLinkLost(address)
             },
             onProfile = { payload -> chat.setPeerAlias(parseAlias(payload)) },
@@ -159,6 +181,7 @@ class RadarSessionManager(context: Context) {
     }
 
     private fun onPeerUp(address: String) {
+        _linkError.value = null
         peers.add(address)
         chat.setConnected(true)
         updateStats()
@@ -330,7 +353,11 @@ class RadarSessionManager(context: Context) {
             onSubscribed = ::onPeerUp,
             onDisconnected = ::onLinkLost
         )
-        if (gattServer.open()) server = gattServer
+        if (gattServer.open()) {
+            server = gattServer
+        } else {
+            _linkError.value = "Este dispositivo no pudo abrir el servidor BLE"
+        }
     }
 
     private fun onServerControl(address: String, payload: ByteArray) {
