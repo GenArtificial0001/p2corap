@@ -46,6 +46,15 @@ class RadarGattClient(
 
     private val queue = ArrayDeque<Pair<BluetoothGattCharacteristic, ByteArray>>()
     private var writing = false
+    private var writeFailures = 0
+
+    private val writeTimeout = Runnable {
+        if (writing) {
+            Log.w(TAG, "Timeout esperando onCharacteristicWrite")
+            writing = false
+            pump()
+        }
+    }
 
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
@@ -99,6 +108,7 @@ class RadarGattClient(
 
     @SuppressLint("MissingPermission")
     private fun giveUp() {
+        handler.removeCallbacks(writeTimeout)
         runCatching { gatt?.close() }
         gatt = null
         messageChar = null
@@ -110,6 +120,7 @@ class RadarGattClient(
 
     @SuppressLint("MissingPermission")
     private fun retryOrGiveUp() {
+        handler.removeCallbacks(writeTimeout)
         runCatching { gatt?.close() }
         gatt = null
         messageChar = null
@@ -133,8 +144,8 @@ class RadarGattClient(
     @SuppressLint("MissingPermission")
     private fun pump() {
         if (writing) return
-        val next = queue.pollFirst() ?: return
         val gatt = gatt ?: return
+        val next = queue.peekFirst() ?: return
 
         writing = true
         val (characteristic, payload) = next
@@ -142,9 +153,23 @@ class RadarGattClient(
         characteristic.value = payload
         @Suppress("DEPRECATION")
         val started = gatt.writeCharacteristic(characteristic)
-        if (!started) {
+
+        if (started) {
+            queue.pollFirst()
+            writeFailures = 0
+            handler.removeCallbacks(writeTimeout)
+            handler.postDelayed(writeTimeout, WRITE_TIMEOUT_MS)
+        } else {
             writing = false
-            Log.w(TAG, "writeCharacteristic rechazó el paquete")
+            writeFailures++
+            if (writeFailures >= MAX_WRITE_FAILURES) {
+                Log.e(TAG, "El stack rechazó $writeFailures escrituras seguidas; se descarta el paquete")
+                queue.pollFirst()
+                writeFailures = 0
+            } else {
+                Log.w(TAG, "writeCharacteristic rechazó el paquete; reintento $writeFailures")
+                handler.postDelayed({ pump() }, WRITE_RETRY_DELAY_MS)
+            }
         }
     }
 
@@ -259,6 +284,7 @@ class RadarGattClient(
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "Escritura falló: $status")
             }
+            handler.removeCallbacks(writeTimeout)
             writing = false
             pump()
         }
@@ -268,5 +294,8 @@ class RadarGattClient(
         const val TAG = "RadarGattClient"
         const val MAX_ATTEMPTS = 1
         const val RETRY_BASE_DELAY_MS = 600L
+        const val WRITE_TIMEOUT_MS = 2_000L
+        const val WRITE_RETRY_DELAY_MS = 200L
+        const val MAX_WRITE_FAILURES = 5
     }
 }

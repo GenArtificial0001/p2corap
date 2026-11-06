@@ -18,6 +18,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.location.LocationManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import android.provider.Settings
@@ -49,6 +51,19 @@ class RadarBleManager(private val context: Context) {
     private var advertiser: BluetoothLeAdvertiser? = null
     private var scanner: BluetoothLeScanner? = null
 
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** true si el radio se apagó mientras Radar estaba activo. */
+    private var resumeOnBtOn = false
+
+    /** Descarta peers que dejaron de verse, para que la lista no se petrifique. */
+    private val pruneLoop = object : Runnable {
+        override fun run() {
+            prune()
+            if (_scanning.value) handler.postDelayed(this, PRUNE_INTERVAL_MS)
+        }
+    }
+
     private val _peers = MutableStateFlow<List<RadarPeer>>(emptyList())
     val peers: StateFlow<List<RadarPeer>> = _peers.asStateFlow()
 
@@ -71,8 +86,14 @@ class RadarBleManager(private val context: Context) {
             val on = state == BluetoothAdapter.STATE_ON
             _bluetoothOn.value = on
             if (!on) {
-                stopAll()
+                // Conservamos si Radar estaba activo para reanudar al encender.
+                if (_advertising.value || _scanning.value) resumeOnBtOn = true
+                stopAllInternal()
                 _error.value = "Bluetooth apagado"
+            } else if (resumeOnBtOn) {
+                resumeOnBtOn = false
+                startAdvertising()
+                startScanning()
             }
         }
     }
@@ -173,6 +194,8 @@ class RadarBleManager(private val context: Context) {
         try {
             sc.startScan(listOf(filter), settings, scanCallback)
             _scanning.value = true
+            handler.removeCallbacks(pruneLoop)
+            handler.postDelayed(pruneLoop, PRUNE_INTERVAL_MS)
         } catch (_: SecurityException) {
             fail("Falta permiso BLUETOOTH_SCAN")
         }
@@ -186,6 +209,7 @@ class RadarBleManager(private val context: Context) {
             // sin permiso: nada que detener
         }
         _scanning.value = false
+        handler.removeCallbacks(pruneLoop)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -230,6 +254,12 @@ class RadarBleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun stopAll() {
+        resumeOnBtOn = false
+        stopAllInternal()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopAllInternal() {
         stopAdvertising()
         stopScanning()
         _peers.value = emptyList()
@@ -263,5 +293,6 @@ class RadarBleManager(private val context: Context) {
 
     private companion object {
         const val TAG = "RadarBle"
+        const val PRUNE_INTERVAL_MS = 5_000L
     }
 }

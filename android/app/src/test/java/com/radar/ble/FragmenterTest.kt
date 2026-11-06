@@ -52,6 +52,36 @@ class FragmenterTest {
     }
 
     @Test
+    fun `si falta un fragmento no se entrega un mensaje truncado`() {
+        val assembler = MessageAssembler()
+        val bytes = ByteArray(100) { it.toByte() }
+        val frames = Fragmenter.fragment(bytes)
+
+        // Llega el último fragmento y todos menos el del medio.
+        var result: ByteArray? = null
+        frames.forEachIndexed { index, frame ->
+            if (index != 2) assembler.accept(frame)?.let { result = it }
+        }
+
+        assertNull(result)
+    }
+
+    @Test
+    fun `fragmentos duplicados no corrompen el mensaje`() {
+        val assembler = MessageAssembler()
+        val bytes = "radar ".repeat(50).toByteArray(Charsets.UTF_8)
+        val frames = Fragmenter.fragment(bytes)
+
+        var result: ByteArray? = null
+        frames.forEach { frame ->
+            assembler.accept(frame)
+            assembler.accept(frame)?.let { result = it }
+        }
+
+        assertArrayEquals(bytes, result)
+    }
+
+    @Test
     fun `un paquete basura no rompe el ensamblador`() {
         val assembler = MessageAssembler()
 

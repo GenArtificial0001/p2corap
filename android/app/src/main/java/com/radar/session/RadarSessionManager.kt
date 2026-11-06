@@ -86,6 +86,7 @@ class RadarSessionManager(context: Context) {
 
     fun start() {
         _running.value = true
+        ble.clearError()
         ensureServer()
         RadarForegroundService.start(appContext)
         ble.startAdvertising()
