@@ -15,6 +15,9 @@
 - [x] UI mínima con permisos en runtime
 
 ## Fase 2 — Que funcione de verdad
+- [x] Malla multi-salto: dedup, TTL, store-and-forward (`mesh/`)
+- [x] Vínculos BLE simultáneos (hasta 3 salientes)
+- [x] CI de compilación en GitHub Actions
 - [ ] Compilar y correr en dos dispositivos físicos
 - [ ] Foreground service (`connectedDevice`) para background en Android
 - [ ] `FLAG_SECURE` + `setRecentsScreenshotEnabled(false)`

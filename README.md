@@ -2,7 +2,9 @@
 
 Mensajería **peer-to-peer efímera sobre Bluetooth Low Energy (BLE)**. Sin servidores, sin cuentas, sin persistencia: el chat vive y muere con la conexión.
 
-> **Estado:** Fase 1 — esqueleto funcional (Android/Kotlin). El núcleo BLE, el perfil GATT y la capa de mensajería volátil están implementados. La UI es mínima y el proyecto **no fue compilado todavía** en este entorno (no hay JDK/Android SDK disponibles).
+Cada dispositivo con la app **extiende la red**: los mensajes se reenvían de teléfono en teléfono (mesh multi-salto), así que dos personas pueden escribirse sin estar dentro del alcance Bluetooth de la otra.
+
+> **Estado:** Fase 2 — Android/Kotlin. Núcleo BLE, perfil GATT, mensajería volátil y **malla multi-salto** implementados. La compilación se valida con GitHub Actions (`.github/workflows/android.yml`).
 
 ## Principios
 
@@ -12,6 +14,7 @@ Mensajería **peer-to-peer efímera sobre Bluetooth Low Energy (BLE)**. Sin serv
 | **Zero-Storage** | Sin Room, SQLite ni SharedPreferences. El estado vive en `StateFlow` en RAM. |
 | **Sesión = conexión** | Al caer el vínculo GATT, el historial se purga. |
 | **Doble rol** | Cada dispositivo es Peripheral (GATT server) y Central (GATT client) a la vez. |
+| **Malla** | Hasta 3 saltos por mensaje, con dedup y store-and-forward. |
 
 ## Estructura
 
@@ -20,8 +23,9 @@ docs/                       Especificación, perfil GATT, revisión técnica y r
 android/
   app/src/main/java/com/radar/
     ble/                    Advertising, scanning, GATT server y client
+    mesh/                   Paquete de malla, dedup, TTL, store-and-forward
     chat/                   Modelo de mensaje + repositorio volátil
-    session/                Máquina de estados del handshake
+    session/                Vínculos simultáneos, handshake y ruteo
     ui/                     UI Compose mínima
 ```
 
@@ -35,6 +39,19 @@ android/
 | `0000FA04-…` | Message Tx/Rx | WRITE, NOTIFY |
 
 Detalle completo en [`docs/02-gatt.md`](docs/02-gatt.md).
+
+## Malla
+
+```
+[A] ──── [B] ──── [C] ──── [D]
+```
+
+- Cada nodo reenvía **una sola vez** cada mensaje (dedup por `messageId`).
+- TTL de **3 saltos** ≈ 4 dispositivos de extremo a extremo.
+- Store-and-forward: lo que no pudo salir queda hasta 2 minutos y se entrega al próximo vecino.
+- Hasta 3 conexiones salientes simultáneas por nodo.
+
+> 🔴 **Límite de seguridad:** sin cifrado extremo a extremo, los nodos intermedios leen el texto. Es el próximo bloqueante. Ver [`docs/05-mesh.md`](docs/05-mesh.md).
 
 ## Compilar
 
@@ -52,6 +69,7 @@ El advertising y el scanning **no funcionan en emulador**: hace falta hardware r
 - [`docs/02-gatt.md`](docs/02-gatt.md) — perfil, framing y handshake
 - [`docs/03-revision-tecnica.md`](docs/03-revision-tecnica.md) — **hallazgos y riesgos** (leer antes de codear)
 - [`docs/04-roadmap.md`](docs/04-roadmap.md) — fases
+- [`docs/05-mesh.md`](docs/05-mesh.md) — **malla multi-salto**: formato, TTL y límites
 
 ## Aviso
 

@@ -1,11 +1,13 @@
 package com.radar.ble
 
 /**
- * Framing de mensajes sobre el characteristic Message Tx/Rx.
+ * Framing de paquetes sobre el characteristic Message Tx/Rx.
  *
- * Cada paquete: [seq:1][total:1][flags:1][payload:<=17]
+ * Cada fragmento: [seq:1][total:1][flags:1][payload:<=17]
  * El receptor reensambla hasta `total`. Sin ACK: si falta un fragmento,
  * el mensaje se descarta por timeout (ver R-03).
+ *
+ * El framing transporta bytes opacos: el contenido real es un MeshPacket.
  */
 object Fragmenter {
 
@@ -13,11 +15,12 @@ object Fragmenter {
     const val MAX_FRAGMENT_PAYLOAD = RadarUuids.MIN_FRAGMENT_PAYLOAD
     const val FLAG_LAST: Byte = 0x01
 
-    fun fragment(text: String): List<ByteArray> {
-        require(text.isNotEmpty()) { "Un mensaje vacío no se envía" }
-        val bytes = text.toByteArray(Charsets.UTF_8)
+    fun fragment(text: String): List<ByteArray> = fragment(text.toByteArray(Charsets.UTF_8))
+
+    fun fragment(bytes: ByteArray): List<ByteArray> {
+        require(bytes.isNotEmpty()) { "No se envía un paquete vacío" }
         val total = (bytes.size + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD
-        require(total <= 255) { "Mensaje demasiado largo: ${bytes.size} bytes" }
+        require(total <= 255) { "Paquete demasiado grande: ${bytes.size} bytes" }
 
         return (0 until total).map { index ->
             val from = index * MAX_FRAGMENT_PAYLOAD
@@ -35,8 +38,7 @@ object Fragmenter {
 }
 
 /**
- * Reensambla los fragmentos de un mensaje. No es thread-safe: usar un
- * ensamblador por dispositivo.
+ * Reensambla fragmentos en bytes. Un ensamblador por link.
  */
 class MessageAssembler {
 
@@ -45,8 +47,8 @@ class MessageAssembler {
     private var received: Int = 0
     private var lastUpdateMs: Long = 0L
 
-    /** Devuelve el texto completo cuando llega el último fragmento, o null. */
-    fun accept(packet: ByteArray): String? {
+    /** Devuelve el paquete completo al llegar el último fragmento, o null. */
+    fun accept(packet: ByteArray): ByteArray? {
         if (packet.size <= Fragmenter.HEADER_SIZE) return null
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -58,8 +60,7 @@ class MessageAssembler {
         val last = (packet[2].toInt() and Fragmenter.FLAG_LAST.toInt()) != 0
         val chunk = packet.copyOfRange(Fragmenter.HEADER_SIZE, packet.size)
 
-        if (total <= 0) return null
-        if (seq >= total) return null
+        if (total <= 0 || seq >= total) return null
 
         if (buffer == null || expected != total || seq == 0) {
             buffer = ByteArray(total * Fragmenter.MAX_FRAGMENT_PAYLOAD)
@@ -75,9 +76,9 @@ class MessageAssembler {
 
         if (!last && received < expected) return null
 
-        val text = String(target, 0, offset + chunk.size, Charsets.UTF_8)
+        val out = target.copyOf(offset + chunk.size)
         reset()
-        return text.ifEmpty { null }
+        return out.ifEmpty { null }
     }
 
     fun reset() {

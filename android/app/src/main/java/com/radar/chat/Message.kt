@@ -4,5 +4,7 @@ package com.radar.chat
 data class Message(
     val text: String,
     val isMine: Boolean,
-    val timestamp: Long
+    val timestamp: Long,
+    /** Saltos de malla que recorrió. 0 = escrito en este dispositivo. */
+    val hops: Int = 0
 )

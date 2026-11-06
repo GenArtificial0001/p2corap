@@ -77,10 +77,10 @@ private fun RadarRoot(session: RadarSessionManager) {
     val peers by session.ble.peers.collectAsState()
     val connected by session.chat.connected.collectAsState()
     val messages by session.chat.messages.collectAsState()
-    val peerAlias by session.chat.peerAlias.collectAsState()
     val error by session.ble.error.collectAsState()
     val advertising by session.ble.advertising.collectAsState()
     val scanning by session.ble.scanning.collectAsState()
+    val stats by session.stats.collectAsState()
 
     val required = remember { requiredPermissions() }
     var granted by remember {
@@ -123,13 +123,20 @@ private fun RadarRoot(session: RadarSessionManager) {
                 Text(
                     text = when {
                         !granted -> "Permisos pendientes"
-                        connected -> "Sesión efímera con ${peerAlias ?: "un peer"}"
+                        stats.links > 0 -> "Malla activa · ${stats.links} vínculo(s)"
                         scanning || advertising -> "Buscando pares…"
                         else -> "Radar detenido"
                     },
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (stats.links > 0) {
+                    Text(
+                        text = "${stats.relayed} relayado(s) · salto máx ${stats.maxHop}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             if (started) {
                 TextButton(onClick = {
@@ -183,9 +190,10 @@ private fun PeerList(peers: List<RadarPeer>, scanning: Boolean, onConnect: (Stri
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "Los peers aparecen cuando comparten el servicio Radar.",
+                text = "Cada dispositivo conectado reenvía los mensajes: la red crece con la gente.",
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp)
             )
         }
         return
@@ -237,7 +245,8 @@ private fun ChatPanel(
     Column(modifier = Modifier.fillMaxSize()) {
         if (messages.isEmpty()) {
             Text(
-                text = "Sesión abierta. Al desconectarse, este chat desaparece.",
+                text = "Sesión abierta. Los mensajes se reenvían entre dispositivos; " +
+                    "al caer el último vínculo, el chat desaparece.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 16.dp)
@@ -258,11 +267,16 @@ private fun ChatPanel(
                         if (message.isMine) Arrangement.End else Arrangement.Start
                 ) {
                     Card {
-                        Text(
-                            text = message.text,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            fontSize = 14.sp
-                        )
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Text(text = message.text, fontSize = 14.sp)
+                            if (!message.isMine && message.hops > 0) {
+                                Text(
+                                    text = "${message.hops} salto(s)",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }

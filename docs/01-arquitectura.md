@@ -29,7 +29,9 @@ BLE no es simétrico. Cada dispositivo cumple ambos roles a la vez:
 ┌─────────────────────────────────────────┐
 │ UI (Compose)                            │
 ├─────────────────────────────────────────┤
-│ SessionManager  (estado del handshake)  │
+│ SessionManager  (vínculos + handshake)  │
+├─────────────────────────────────────────┤
+│ MeshRouter  (dedup · TTL · reenvío)     │
 ├──────────────────────┬──────────────────┤
 │ VolatileChatRepository│ RadarGattClient │
 │ (RAM, StateFlow)      │ RadarGattServer │
@@ -58,7 +60,7 @@ Los tres characteristics viven bajo un único `Service UUID`, lo que reduce el t
 
 ## Fuera de alcance (v1)
 
-- Mensajería multi-salto / mesh.
+- Mensajería multi-salto **sin** cifrado E2E (la malla existe, pero el contenido viaja en claro).
 - Varias conversaciones simultáneas (el repo modela **una** sesión activa).
 - Persistencia, historial, búsqueda.
 - Identidad criptográfica verificable (ver R-09).
