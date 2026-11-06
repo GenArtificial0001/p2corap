@@ -15,8 +15,15 @@ import android.util.Log
 import java.util.ArrayDeque
 
 /**
- * Lado Central: se conecta a un peer, lee su perfil, habilita notificaciones
+ * Lado Central: se conecta a un peer, habilita notificaciones, lee su perfil
  * y envía paquetes fragmentados.
+ *
+ * Secuencia (una sola operación GATT en vuelo a la vez):
+ * conectar → descubrir servicios → escribir CCCD → leer perfil → `onReady`.
+ * Recién entonces se permiten escrituras de la app (handshake y mensajes).
+ *
+ * Hilos: los callbacks del stack llegan en hilos del binder; todos se
+ * reenvían al hilo principal, donde viven la cola y los flags de esta clase.
  *
  * Reintenta una vez si el primer intento falla (el error 133 es habitual tras
  * un scan agresivo). Las escrituras se encolan porque el stack no soporta dos
@@ -44,6 +51,9 @@ class RadarGattClient(
     private var attempts = 0
     private var closedByUser = false
 
+    /** Evita avisar `onReady` dos veces (lectura de perfil fallida + timeout, etc.). */
+    private var readyFired = false
+
     private val queue = ArrayDeque<Pair<BluetoothGattCharacteristic, ByteArray>>()
     private var writing = false
     private var writeFailures = 0
@@ -67,16 +77,25 @@ class RadarGattClient(
         target = address
         closedByUser = false
         attempts = 0
+        readyFired = false
+        armConnectTimeout()
+        connectInternal(address)
+    }
+
+    private fun armConnectTimeout() {
         handler.removeCallbacks(connectTimeout)
         handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
-        connectInternal(address)
     }
 
     @SuppressLint("MissingPermission")
     private fun connectInternal(address: String) {
-        val device = manager?.adapter?.getRemoteDevice(address) ?: run {
+        val device = (try {
+            manager?.adapter?.getRemoteDevice(address)
+        } catch (e: IllegalArgumentException) {
+            null
+        }) ?: run {
             Log.e(TAG, "Dirección inválida: $address")
-            onDisconnected()
+            giveUp()
             return
         }
         val newGatt = try {
@@ -143,12 +162,15 @@ class RadarGattClient(
         messageChar = null
         controlChar = null
         writing = false
+        readyFired = false
 
         val address = target
         if (!closedByUser && address != null && attempts < MAX_ATTEMPTS) {
             attempts++
             val delay = RETRY_BASE_DELAY_MS * attempts
             Log.w(TAG, "Reintentando conexión con $address en ${delay}ms (intento $attempts)")
+            // Sin este timeout, un reintento colgado dejaba la UI en "Conectando…" para siempre.
+            armConnectTimeout()
             handler.postDelayed({
                 if (!closedByUser) connectInternal(address)
             }, delay)
@@ -158,8 +180,10 @@ class RadarGattClient(
         }
     }
 
-    /** Llama al listener de listo y cancela el timeout de conexión. */
+    /** Llama al listener de listo (una sola vez) y cancela el timeout de conexión. */
     private fun fireReady() {
+        if (readyFired) return
+        readyFired = true
         handler.removeCallbacks(connectTimeout)
         onReady()
     }
@@ -168,8 +192,9 @@ class RadarGattClient(
     @SuppressLint("MissingPermission")
     private fun readProfile(g: BluetoothGatt) {
         val profile = g.getService(RadarUuids.SERVICE)
-            ?.getCharacteristic(RadarUuids.PROFILE_CHAR) ?: return
-        g.readCharacteristic(profile)
+            ?.getCharacteristic(RadarUuids.PROFILE_CHAR)
+        // Sin perfil legible seguimos igual: el alias es cosmético.
+        if (profile == null || !g.readCharacteristic(profile)) fireReady()
     }
 
     @SuppressLint("MissingPermission")
@@ -197,6 +222,7 @@ class RadarGattClient(
                 Log.e(TAG, "El stack rechazó $writeFailures escrituras seguidas; se descarta el paquete")
                 queue.pollFirst()
                 writeFailures = 0
+                if (queue.isNotEmpty()) handler.postDelayed({ pump() }, WRITE_RETRY_DELAY_MS)
             } else {
                 Log.w(TAG, "writeCharacteristic rechazó el paquete; reintento $writeFailures")
                 handler.postDelayed({ pump() }, WRITE_RETRY_DELAY_MS)
@@ -208,67 +234,70 @@ class RadarGattClient(
 
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.w(TAG, "Estado de conexión con error: status=$status newState=$newState")
-            }
-
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    if (status == BluetoothGatt.GATT_SUCCESS) {
-                        gatt = g
-                        attempts = 0
-                        g.discoverServices()
-                    } else {
-                        retryOrGiveUp()
-                    }
+            handler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    Log.w(TAG, "Estado de conexión con error: status=$status newState=$newState")
                 }
 
-                BluetoothProfile.STATE_DISCONNECTED -> retryOrGiveUp()
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        if (status == BluetoothGatt.GATT_SUCCESS) {
+                            gatt = g
+                            attempts = 0
+                            g.discoverServices()
+                        } else {
+                            retryOrGiveUp()
+                        }
+                    }
+
+                    BluetoothProfile.STATE_DISCONNECTED -> retryOrGiveUp()
+                }
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(TAG, "discoverServices falló: $status")
-                retryOrGiveUp()
-                return
-            }
-
-            val service = g.getService(RadarUuids.SERVICE) ?: run {
-                Log.e(TAG, "El peer no expone el servicio Radar")
-                giveUp()
-                return
-            }
-
-            controlChar = service.getCharacteristic(RadarUuids.CONTROL_CHAR)
-            messageChar = service.getCharacteristic(RadarUuids.MESSAGE_CHAR)
-
-            val message = messageChar
-            if (message == null) {
-                Log.e(TAG, "Falta el characteristic de mensajes")
-                giveUp()
-                return
-            }
-
-            // El stack GATT solo admite una operación a la vez. Primero el CCCD
-            // (lo imprescindible para recibir); el perfil se lee después, en el
-            // callback del descriptor. Hacer ambas cosas acá pierde la segunda.
-            g.setCharacteristicNotification(message, true)
-            val cccd = message.getDescriptor(RadarUuids.CCCD)
-            if (cccd != null) {
-                @Suppress("DEPRECATION")
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                val started = g.writeDescriptor(cccd)
-                if (!started) {
-                    Log.e(TAG, "writeDescriptor rechazado por el stack")
-                    giveUp()
+            handler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    Log.e(TAG, "discoverServices falló: $status")
+                    retryOrGiveUp()
+                    return@post
                 }
-            } else {
-                Log.w(TAG, "El peer no expone CCCD; se sigue sin notificaciones")
-                readProfile(g)
-                fireReady()
+
+                val service = g.getService(RadarUuids.SERVICE) ?: run {
+                    Log.e(TAG, "El peer no expone el servicio Radar")
+                    giveUp()
+                    return@post
+                }
+
+                controlChar = service.getCharacteristic(RadarUuids.CONTROL_CHAR)
+                messageChar = service.getCharacteristic(RadarUuids.MESSAGE_CHAR)
+
+                val message = messageChar
+                if (message == null) {
+                    Log.e(TAG, "Falta el characteristic de mensajes")
+                    giveUp()
+                    return@post
+                }
+
+                // El stack GATT solo admite una operación a la vez. Primero el CCCD
+                // (lo imprescindible para recibir); el perfil se lee después, en el
+                // callback del descriptor, y `onReady` recién al terminar esa lectura.
+                g.setCharacteristicNotification(message, true)
+                val cccd = message.getDescriptor(RadarUuids.CCCD)
+                if (cccd != null) {
+                    @Suppress("DEPRECATION")
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    val started = g.writeDescriptor(cccd)
+                    if (!started) {
+                        Log.e(TAG, "writeDescriptor rechazado por el stack")
+                        giveUp()
+                    }
+                } else {
+                    Log.w(TAG, "El peer no expone CCCD; se sigue sin notificaciones")
+                    readProfile(g)
+                }
             }
         }
 
@@ -278,12 +307,13 @@ class RadarGattClient(
             status: Int
         ) {
             if (descriptor.uuid != RadarUuids.CCCD) return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                readProfile(g)
-                fireReady()
-            } else {
-                Log.e(TAG, "No se pudo habilitar notificaciones: status=$status")
-                giveUp()
+            handler.post {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    readProfile(g)
+                } else {
+                    Log.e(TAG, "No se pudo habilitar notificaciones: status=$status")
+                    giveUp()
+                }
             }
         }
 
@@ -299,9 +329,13 @@ class RadarGattClient(
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) return
-            when (characteristic.uuid) {
-                RadarUuids.PROFILE_CHAR -> onProfile(characteristic.value ?: ByteArray(0))
+            val uuid = characteristic.uuid
+            val value = characteristic.value?.copyOf() ?: ByteArray(0)
+            handler.post {
+                if (uuid != RadarUuids.PROFILE_CHAR) return@post
+                if (status == BluetoothGatt.GATT_SUCCESS) onProfile(value)
+                // Éxito o no, el enlace ya está usable: se libera el handshake.
+                fireReady()
             }
         }
 
@@ -310,10 +344,13 @@ class RadarGattClient(
             g: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
-            val value = characteristic.value ?: return
-            when (characteristic.uuid) {
-                RadarUuids.CONTROL_CHAR -> onControl(value)
-                RadarUuids.MESSAGE_CHAR -> onMessage(value)
+            val value = characteristic.value?.copyOf() ?: return
+            val uuid = characteristic.uuid
+            handler.post {
+                when (uuid) {
+                    RadarUuids.CONTROL_CHAR -> onControl(value)
+                    RadarUuids.MESSAGE_CHAR -> onMessage(value)
+                }
             }
         }
 
@@ -323,12 +360,14 @@ class RadarGattClient(
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.w(TAG, "Escritura falló: $status")
+            handler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    Log.w(TAG, "Escritura falló: $status")
+                }
+                handler.removeCallbacks(writeTimeout)
+                writing = false
+                pump()
             }
-            handler.removeCallbacks(writeTimeout)
-            writing = false
-            pump()
         }
     }
 

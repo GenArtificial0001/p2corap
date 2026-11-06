@@ -83,6 +83,8 @@ class RadarBleManager(private val context: Context) {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
             val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            // Estados transitorios (TURNING_ON/OFF) no cambian nada: esperamos al final.
+            if (state != BluetoothAdapter.STATE_ON && state != BluetoothAdapter.STATE_OFF) return
             val on = state == BluetoothAdapter.STATE_ON
             _bluetoothOn.value = on
             if (!on) {
@@ -90,29 +92,51 @@ class RadarBleManager(private val context: Context) {
                 if (_advertising.value || _scanning.value) resumeOnBtOn = true
                 stopAllInternal()
                 _error.value = "Bluetooth apagado"
-            } else if (resumeOnBtOn) {
-                resumeOnBtOn = false
-                startAdvertising()
-                startScanning()
+            } else {
+                if (_error.value == "Bluetooth apagado") _error.value = null
+                if (resumeOnBtOn) {
+                    resumeOnBtOn = false
+                    startAdvertising()
+                    startScanning()
+                }
             }
+            // La sesión necesita saberlo: los GATT abiertos mueren con el radio.
+            bluetoothListener?.invoke(on)
         }
     }
 
-    init {
-        runCatching {
+    /** Aviso de encendido/apagado del radio, para que la sesión rehaga sus vínculos. */
+    var bluetoothListener: ((Boolean) -> Unit)? = null
+
+    private var receiverRegistered = false
+
+    /**
+     * El receiver se libera en [close]. Como la sesión puede detenerse y volver
+     * a iniciarse, se registra de nuevo en cada arranque (si no, tras
+     * «Detener → Iniciar» la app dejaba de enterarse de que Bluetooth se apagó).
+     */
+    private fun registerReceiverIfNeeded() {
+        if (receiverRegistered) return
+        receiverRegistered = runCatching {
             ContextCompat.registerReceiver(
                 appContext,
                 adapterReceiver,
                 IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
                 ContextCompat.RECEIVER_NOT_EXPORTED
             )
-        }
+        }.isSuccess
+        _bluetoothOn.value = isEnabled
+    }
+
+    init {
+        registerReceiverIfNeeded()
     }
 
     // ---------------------------------------------------------------- advertise
 
     @SuppressLint("MissingPermission")
     fun startAdvertising() {
+        registerReceiverIfNeeded()
         val bt = adapter ?: return fail("Bluetooth no disponible")
         if (!bt.isEnabled) return fail("Activá Bluetooth")
         if (!bt.isMultipleAdvertisementSupported) {
@@ -268,7 +292,10 @@ class RadarBleManager(private val context: Context) {
     /** Libera el receiver. La sesión se encarga de llamarlo al cerrarse. */
     @SuppressLint("MissingPermission")
     fun close() {
-        runCatching { appContext.unregisterReceiver(adapterReceiver) }
+        if (receiverRegistered) {
+            runCatching { appContext.unregisterReceiver(adapterReceiver) }
+            receiverRegistered = false
+        }
         stopAll()
     }
 

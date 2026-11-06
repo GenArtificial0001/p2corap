@@ -8,6 +8,7 @@ import com.radar.ble.MessageAssembler
 import com.radar.ble.RadarBleManager
 import com.radar.ble.RadarGattClient
 import com.radar.ble.RadarGattServer
+import com.radar.chat.TextLimit
 import com.radar.chat.VolatileChatRepository
 import com.radar.crypto.MeshCrypto
 import com.radar.crypto.RadarCrypto
@@ -33,7 +34,9 @@ data class MeshStats(
     /** ACKs recibidos de mensajes propios. */
     val acked: Int = 0,
     /** Conexiones esperando un slot libre. */
-    val queued: Int = 0
+    val queued: Int = 0,
+    /** Direcciones con vínculo activo (para marcar «Vinculado» en la lista de pares). */
+    val linkedAddresses: Set<String> = emptySet()
 )
 
 /**
@@ -84,6 +87,7 @@ class RadarSessionManager(context: Context) {
     init {
         // Todo el mundo empieza en la misma sala pública para poder hablar de inmediato.
         crypto.join(RadarCrypto.PUBLIC_ROOM_CODE)
+        ble.bluetoothListener = ::onBluetoothChanged
     }
 
     private var server: RadarGattServer? = null
@@ -132,6 +136,41 @@ class RadarSessionManager(context: Context) {
     }
 
     // --------------------------------------------------------------- vínculos
+
+    /**
+     * Bluetooth se apagó o volvió. Al apagarse mueren todos los GATT (cliente y
+     * servidor): se sueltan para no quedar con vínculos fantasma y, al volver,
+     * se reabre el servidor para poder recibir conexiones otra vez.
+     */
+    private fun onBluetoothChanged(on: Boolean) {
+        if (!_running.value) return
+        if (!on) {
+            clients.values.forEach { runCatching { it.close() } }
+            clients.clear()
+            connecting.clear()
+            waiting.clear()
+            _connectingTo.value = null
+            runCatching { server?.close() }
+            server = null
+            peers.clear()
+            assemblers.clear()
+            chat.purgeSession()
+        } else {
+            ensureServer()
+        }
+        updateStats()
+    }
+
+    /** Cierra el vínculo con [address], sea cual sea el rol que tengamos. */
+    fun disconnect(address: String) {
+        val client = clients[address]
+        if (client != null) {
+            // close() corta el GATT; el otro extremo lo ve como desconexión normal.
+            onLinkLost(address)
+            return
+        }
+        server?.disconnect(address)
+    }
 
     fun connect(address: String) {
         _linkError.value = null
@@ -212,7 +251,8 @@ class RadarSessionManager(context: Context) {
     // -------------------------------------------------------------- mensajes
 
     fun send(text: String) {
-        val trimmed = text.trim().take(MAX_PLAINTEXT_CHARS)
+        // Se recorta por bytes UTF-8, no por caracteres: ver TextLimit.
+        val trimmed = TextLimit.truncate(text.trim())
         if (trimmed.isEmpty() || peers.isEmpty()) return
 
         val payload = crypto.encrypt(trimmed.toByteArray(Charsets.UTF_8)) ?: return
@@ -228,7 +268,8 @@ class RadarSessionManager(context: Context) {
         val joined = crypto.join(code)
         if (joined) {
             _roomCode.value = crypto.currentCode()
-            chat.purgeSession()
+            // Los vínculos siguen vivos: solo se borran los mensajes de la sala anterior.
+            chat.clearMessages()
         }
         return joined
     }
@@ -236,7 +277,7 @@ class RadarSessionManager(context: Context) {
     /** Genera una sala nueva con código aleatorio. */
     fun newRoom() {
         _roomCode.value = crypto.startNewRoom()
-        chat.purgeSession()
+        chat.clearMessages()
     }
 
     fun setAlias(value: String) {
@@ -336,7 +377,8 @@ class RadarSessionManager(context: Context) {
             it.copy(
                 links = peers.size,
                 pending = router.pendingCount(),
-                queued = waiting.size
+                queued = waiting.size,
+                linkedAddresses = peers.toSet()
             )
         }
     }
@@ -396,9 +438,6 @@ class RadarSessionManager(context: Context) {
 
     private companion object {
         const val AVATAR_ID: Byte = 1
-
-        /** Deja margen para nonce + tag GCM dentro del payload de 512 bytes. */
-        const val MAX_PLAINTEXT_CHARS = 400
 
         /**
          * Conexiones salientes simultáneas. Android soporta varias, pero cada

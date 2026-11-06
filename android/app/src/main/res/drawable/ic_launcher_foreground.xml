@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Radar: anillos concéntricos, barrido y un punto de señal. Zona segura de 66dp centrada en 108dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Anillo exterior -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,54m-26,0a26,26 0,1 1,52 0a26,26 0,1 1,-52 0"
+        android:strokeColor="#663DE0FF"
+        android:strokeWidth="2" />
+    <!-- Anillo medio -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,54m-17,0a17,17 0,1 1,34 0a17,17 0,1 1,-34 0"
+        android:strokeColor="#B33DE0FF"
+        android:strokeWidth="2" />
+    <!-- Anillo interior -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,54m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0"
+        android:strokeColor="#FF3DE0FF"
+        android:strokeWidth="2.4" />
+    <!-- Barrido -->
+    <path
+        android:fillColor="#553DE0FF"
+        android:pathData="M54,54L54,28A26,26 0,0 1,76.5,41Z" />
+    <!-- Aguja -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,54L76.5,41"
+        android:strokeColor="#FF3DE0FF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+    <!-- Núcleo -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,54m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
+    <!-- Señal detectada -->
+    <path
+        android:fillColor="#FF8B7CFF"
+        android:pathData="M68,62m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+</vector>

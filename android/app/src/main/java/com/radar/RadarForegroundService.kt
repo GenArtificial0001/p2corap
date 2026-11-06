@@ -65,7 +65,7 @@ class RadarForegroundService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.service_title))
             .setContentText(getString(R.string.service_text))
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setSmallIcon(R.drawable.ic_stat_radar)
             .setContentIntent(openApp)
             .setOngoing(true)
             .build()

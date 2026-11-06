@@ -21,6 +21,20 @@ Cada dispositivo con la app **extiende la red**: los mensajes se reenvían de te
 | **Confirmación** | ACK de aplicación por mensaje (`✓ entregado`), propagado por la malla. |
 | **Background** | Foreground service `connectedDevice`: el advertising sobrevive a Doze. |
 
+## Interfaz
+
+Diseño tipo «pantalla de señal»: un **radar animado** muestra a los dispositivos cercanos (la distancia sale del RSSI)
+y la app se adapta al ancho disponible.
+
+- **Teléfono:** una columna con barra inferior *Cerca / Chat*, insignia de mensajes nuevos y salto automático al chat
+  al conectar.
+- **Tablet, plegable abierto o apaisado (≥ 720dp):** dos paneles, radar + pares a la izquierda y chat a la derecha.
+- Modo borde a borde (Android 15), teclado que empuja el compositor, objetivos táctiles ≥ 48dp, contraste AA,
+  TalkBack con *live regions* y respeto de «Quitar animaciones».
+- Hoja de **Sala** con QR, copiar (marcado como sensible), compartir, escanear y unirse; crear sala exige confirmación.
+
+Detalle y lista de correcciones en [`docs/06-ui-y-correcciones.md`](docs/06-ui-y-correcciones.md).
+
 ## Estructura
 
 ```
@@ -32,7 +46,7 @@ android/
     crypto/                 Clave de sala, AES-256-GCM, código legible
     chat/                   Modelo de mensaje + repositorio volátil
     session/                Vínculos simultáneos, handshake y ruteo
-    ui/                     UI Compose mínima
+    ui/                     UI Compose adaptable (teléfono y pantallas anchas), tema Radar
 ```
 
 ## Perfil GATT
@@ -109,6 +123,7 @@ El advertising y el scanning **no funcionan en emulador**: hace falta hardware r
 - [`docs/03-revision-tecnica.md`](docs/03-revision-tecnica.md) — **hallazgos y riesgos** (leer antes de codear)
 - [`docs/04-roadmap.md`](docs/04-roadmap.md) — fases
 - [`docs/05-mesh.md`](docs/05-mesh.md) — **malla multi-salto**: formato, TTL y límites
+- [`docs/06-ui-y-correcciones.md`](docs/06-ui-y-correcciones.md) — **rediseño de la interfaz** y correcciones de robustez
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — qué datos se guardan (ninguno) y qué ve la red
 
 ## Aviso

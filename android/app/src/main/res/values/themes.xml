@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Radar" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#0B0F14</item>
-        <item name="android:statusBarColor">#0B0F14</item>
-        <item name="android:navigationBarColor">#0B0F14</item>
-        <item name="android:windowLightStatusBar">false</item>
+    <!--
+        Tema oscuro fijo: la identidad de Radar es una pantalla de señal sobre fondo
+        profundo. El fondo de ventana coincide con el de Compose para que no haya
+        destello al abrir. Las barras del sistema las pinta enableEdgeToEdge().
+    -->
+    <style name="Theme.Radar" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/radar_surface</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowDisablePreview">true</item>
     </style>
 </resources>

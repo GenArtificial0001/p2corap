@@ -1,6 +1,9 @@
 package com.radar.ui
 
 import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.radar.session.RadarSessionManager
 
@@ -19,6 +22,13 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
      * detuvo Radar, no queremos que la nueva composición lo reencienda.
      */
     var stoppedByUser: Boolean = false
+
+    /**
+     * Borrador del mensaje. Vive aquí (RAM) y no en `rememberSaveable`: el
+     * estado guardado de una Activity puede sobrevivir a la muerte del proceso,
+     * y Radar promete no dejar texto en ningún sitio persistente.
+     */
+    var draft by mutableStateOf("")
 
     override fun onCleared() {
         session.stop()

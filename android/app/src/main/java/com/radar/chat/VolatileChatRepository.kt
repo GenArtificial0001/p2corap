@@ -46,6 +46,15 @@ class VolatileChatRepository {
         _peerAlias.value = alias
     }
 
+    /**
+     * Borra los mensajes pero conserva el estado de conexión. Se usa al cambiar
+     * de sala: los vínculos siguen vivos, solo cambia la clave. (Antes se
+     * llamaba [purgeSession] y la UI creía que ya no había nadie conectado.)
+     */
+    fun clearMessages() {
+        _messages.value = emptyList()
+    }
+
     /** Purga total. Se llama cuando no queda ningún vínculo. */
     fun purgeSession() {
         _messages.value = emptyList()
