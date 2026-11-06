@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,8 +29,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Instalación explícita: evita depender de actions de terceros que
-      # cambian de comportamiento entre versiones.
       - name: Android SDK
         run: |
           SDK="$HOME/android-sdk"
@@ -50,8 +51,46 @@ jobs:
           gradle-version: '8.9'
 
       - name: Compilar debug
+        id: build
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon --console=plain --stacktrace > /tmp/build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            {
+              echo "## Fallo de compilación (exit $code)"
+              echo ""
+              echo "### Errores Kotlin"
+              echo '```'
+              grep -E "^e: " /tmp/build.log | head -60
+              echo '```'
+              echo ""
+              echo "### What went wrong"
+              echo '```'
+              sed -n '/\* What went wrong/,/^\* Try:/p' /tmp/build.log | head -40
+              echo '```'
+              echo ""
+              echo "### Últimas líneas"
+              echo '```'
+              tail -60 /tmp/build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $code
+
+      # El log se publica en una rama para poder leerlo sin token.
+      - name: Publicar log
+        if: always()
+        run: |
+          mkdir -p ci
+          cp /tmp/build.log ci/last-build.log 2>/dev/null || echo "(sin log)" > ci/last-build.log
+          git config user.name "radar-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -B ci-logs
+          git add -f ci/last-build.log
+          git commit -m "ci: log del build ${GITHUB_RUN_ID}" || true
+          git push -f origin ci-logs || true
 
       - name: Subir APK
         if: success()
