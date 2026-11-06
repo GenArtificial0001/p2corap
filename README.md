@@ -1,10 +1,12 @@
 # Radar
 
+[![Android CI](https://github.com/GenArtificial0001/p2corap/actions/workflows/android.yml/badge.svg)](https://github.com/GenArtificial0001/p2corap/actions/workflows/android.yml)
+
 Mensajería **peer-to-peer efímera sobre Bluetooth Low Energy (BLE)**. Sin servidores, sin cuentas, sin persistencia: el chat vive y muere con la conexión.
 
 Cada dispositivo con la app **extiende la red**: los mensajes se reenvían de teléfono en teléfono (mesh multi-salto), así que dos personas pueden escribirse sin estar dentro del alcance Bluetooth de la otra.
 
-> **Estado:** Fase 2 — Android/Kotlin. Núcleo BLE, perfil GATT, mensajería volátil y **malla multi-salto** implementados. La compilación se valida con GitHub Actions (`.github/workflows/android.yml`).
+> **Estado:** Fase 2 — Android/Kotlin. Núcleo BLE, perfil GATT, mensajería volátil y **malla multi-salto** implementados. La compilación está **verde** en CI y cada push publica un APK debug descargable desde la pestaña *Actions*.
 
 ## Principios
 
