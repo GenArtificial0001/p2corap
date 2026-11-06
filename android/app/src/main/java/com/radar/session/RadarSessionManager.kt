@@ -10,6 +10,7 @@ import com.radar.ble.RadarGattClient
 import com.radar.ble.RadarGattServer
 import com.radar.chat.VolatileChatRepository
 import com.radar.crypto.MeshCrypto
+import com.radar.crypto.RadarCrypto
 import com.radar.mesh.MeshPacket
 import com.radar.mesh.MeshRouter
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,7 +58,8 @@ class RadarSessionManager(context: Context) {
 
     private val crypto = MeshCrypto()
 
-    private val _roomCode = MutableStateFlow(crypto.startNewRoom())
+    /** Sala pública de fábrica: todos comparten la misma clave al iniciar. */
+    private val _roomCode = MutableStateFlow(RadarCrypto.PUBLIC_ROOM_CODE)
     val roomCode: StateFlow<String> = _roomCode.asStateFlow()
 
     private val _alias = MutableStateFlow("Radar")
@@ -67,6 +69,14 @@ class RadarSessionManager(context: Context) {
     private val selfId: Int = Random.nextInt(1, Int.MAX_VALUE)
 
     private val router = MeshRouter(selfId = selfId)
+
+    /** Direcciones a las que ya se está intentando conectar (evita doble intento simultáneo). */
+    private val connecting = mutableSetOf<String>()
+
+    init {
+        // Todo el mundo empieza en la misma sala pública para poder hablar de inmediato.
+        crypto.join(RadarCrypto.PUBLIC_ROOM_CODE)
+    }
 
     private var server: RadarGattServer? = null
 
@@ -112,7 +122,7 @@ class RadarSessionManager(context: Context) {
     // --------------------------------------------------------------- vínculos
 
     fun connect(address: String) {
-        if (address in clients || address in peers) return
+        if (address in clients || address in peers || address in connecting) return
 
         if (clients.size >= MAX_OUTGOING) {
             if (address !in waiting) waiting.addLast(address)
@@ -123,16 +133,22 @@ class RadarSessionManager(context: Context) {
     }
 
     private fun openClient(address: String) {
+        connecting.add(address)
+
         val gattClient = RadarGattClient(
             context = appContext,
             onReady = {
+                connecting.remove(address)
                 peers.add(address)
                 chat.setConnected(true)
                 updateStats()
                 flushPendingTo(address)
                 clients[address]?.sendControl(byteArrayOf(ControlOpcode.CONNECT_REQUEST))
             },
-            onDisconnected = { onLinkLost(address) },
+            onDisconnected = {
+                connecting.remove(address)
+                onLinkLost(address)
+            },
             onProfile = { payload -> chat.setPeerAlias(parseAlias(payload)) },
             onControl = { payload -> onClientControl(address, payload) },
             onMessage = { payload -> onFrame(address, payload) }

@@ -31,6 +31,15 @@ object RadarCrypto {
     private const val ITERATIONS = 120_000
     private const val SALT = "radar-v1"
 
+    /**
+     * Código de sala pública de fábrica.
+     *
+     * Todos los dispositivos que instalen Radar empiezan con este mismo código,
+     * así que dos teléfonos cualquiera pueden chatear sin tener que pasarse
+     * un código a mano. Es 20 caracteres válidos del alfabeto Crockford.
+     */
+    const val PUBLIC_ROOM_CODE = "RADAR000000000000000"
+
     /** Alfabeto Crockford: sin I, L, O ni U para evitar confusiones al dictar. */
     private const val ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private const val CODE_GROUPS = 4

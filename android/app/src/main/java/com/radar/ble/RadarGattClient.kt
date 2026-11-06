@@ -56,11 +56,19 @@ class RadarGattClient(
         }
     }
 
+    /** Si no llegó onReady en este lapso, se da por fallida la conexión. */
+    private val connectTimeout = Runnable {
+        Log.w(TAG, "Timeout conectando con $target")
+        giveUp()
+    }
+
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
         target = address
         closedByUser = false
         attempts = 0
+        handler.removeCallbacks(connectTimeout)
+        handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
         connectInternal(address)
     }
 
@@ -106,9 +114,11 @@ class RadarGattClient(
         controlChar = null
     }
 
+    /** Cancela temporizadores y avisa que el vínculo se perdió. */
     @SuppressLint("MissingPermission")
     private fun giveUp() {
         handler.removeCallbacks(writeTimeout)
+        handler.removeCallbacks(connectTimeout)
         runCatching { gatt?.close() }
         gatt = null
         messageChar = null
@@ -121,6 +131,7 @@ class RadarGattClient(
     @SuppressLint("MissingPermission")
     private fun retryOrGiveUp() {
         handler.removeCallbacks(writeTimeout)
+        handler.removeCallbacks(connectTimeout)
         runCatching { gatt?.close() }
         gatt = null
         messageChar = null
@@ -139,6 +150,12 @@ class RadarGattClient(
             queue.clear()
             onDisconnected()
         }
+    }
+
+    /** Llama al listener de listo y cancela el timeout de conexión. */
+    private fun fireReady() {
+        handler.removeCallbacks(connectTimeout)
+        onReady()
     }
 
     @SuppressLint("MissingPermission")
@@ -231,7 +248,17 @@ class RadarGattClient(
                 @Suppress("DEPRECATION")
                 g.writeDescriptor(cccd)
             } else {
-                onReady()
+                fireReady()
+            }
+        }
+
+        override fun onDescriptorWrite(
+            g: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (descriptor.uuid == RadarUuids.CCCD && status == BluetoothGatt.GATT_SUCCESS) {
+                fireReady()
             }
         }
 
@@ -297,5 +324,6 @@ class RadarGattClient(
         const val WRITE_TIMEOUT_MS = 2_000L
         const val WRITE_RETRY_DELAY_MS = 200L
         const val MAX_WRITE_FAILURES = 5
+        const val CONNECT_TIMEOUT_MS = 10_000L
     }
 }

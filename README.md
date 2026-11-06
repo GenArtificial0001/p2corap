@@ -81,7 +81,8 @@ Es una **clave de grupo**: quien tenga el código lee la sala. Forward secrecy p
 
 - El código de sala se muestra en la UI y se puede **copiar**, **compartir** con el selector de Android o convertir en **QR**.
 - El botón **Escanear** abre la cámara y lee el QR de otra persona (ZXing embedded).
-- **Sala nueva** rota la clave y purga el chat.
+- **Sala pública de fábrica**: todos los dispositivos empiezan con el mismo código (`RADAR000000000000000`), así que dos teléfonos cualquiera pueden chatear sin intercambiar códigos.
+- **Sala nueva** rota la clave y purga el chat (genera un código privado; hay que compartirlo para que otros se unan).
 - **Unirse** valida el código (20 caracteres Crockford) antes de cambiar de sala.
 - La sesión vive en un `ViewModel`: rotar la pantalla ya no reinicia la malla ni pierde el chat.
 
