@@ -25,8 +25,11 @@
 - [ ] Tests instrumentados del framing (JVM puro, sin BLE)
 
 ## Fase 3 — Seguridad
+- [x] Cifrado E2E con clave de sala (AES-256-GCM + PBKDF2) — R-02
+- [x] Rotación de sala desde la UI
+- [x] Tests unitarios de crypto y framing en CI
 - [ ] Migrar a UUIDs aleatorios (R-01)
-- [ ] X25519 + HKDF + AES-GCM por sesión (R-02)
+- [ ] X25519 por par: forward secrecy
 - [ ] Fingerprint visual del par (R-09)
 - [ ] ACK + retransmisión, o L2CAP CoC (R-03)
 

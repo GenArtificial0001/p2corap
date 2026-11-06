@@ -67,30 +67,38 @@ La memoria de dedup es un LRU de 512 IDs con TTL de 5 minutos, en RAM (coherente
 | **Batería** | Relay constante = consumo constante. El duty cycle es obligatorio en producción. |
 | **Orden** | Los mensajes pueden llegar desordenados. No hay reloj global. |
 
-## 🔴 Seguridad: la malla rompe la confidencialidad
+## 🔒 Seguridad: clave de sala (implementado)
 
-Este es el punto que hay que decidir antes de usar la app con gente real:
-
-> En una malla, **los nodos intermedios ven el payload**. Hoy el paquete viaja en texto plano. B ya lee lo que A le escribió a C.
-
-Cifrar el enlace BLE (pairing) **no alcanza**: protege A→B y B→C, pero B descifra y reenvía. La única solución es **cifrado extremo a extremo** con claves que B no tiene.
-
-Requisito derivado: R-02 pasa de "importante" a **bloqueante**.
-
-Diseño propuesto (fase siguiente):
+Sin cifrado, **los nodos intermedios leen el payload**. Por eso los mensajes viajan cifrados con una **clave de sala**:
 
 ```
-payload = AES-256-GCM(
-    key  = HKDF(X25519(privA, pubC)),
-    aad  = messageId || originId,
-    data = texto
-)
+payload = nonce(12) || AES-256-GCM(clave_sala, texto)
+clave_sala = PBKDF2-HMAC-SHA256(código, salt="radar-v1", 120k iteraciones)
 ```
 
-- Cada nodo publica su clave pública X25519 en `Profile Info` (reemplaza el avatar ID).
-- El emisor deriva la clave compartida solo con el destinatario.
-- Los relays reenvían ciphertext que no pueden abrir.
-- El `messageId` va en claro (necesario para dedup) pero no revela contenido.
+- El **código** (20 caracteres, alfabeto Crockford) se comparte fuera de banda: de viva voz, QR o mensaje.
+- La clave **nunca viaja por la malla**: los relays reenvían ciphertext que no pueden abrir.
+- El nonce es aleatorio por mensaje; el tag GCM detecta cualquier alteración.
+- Si un nodo recibe un paquete de otra sala, lo **reenvía igual** (para no romper la malla) pero no lo muestra.
+
+### Qué protege y qué no
+
+| Protección | Estado |
+|---|---|
+| Relay intermedio no lee el contenido | ✅ |
+| Sniffer BLE pasivo no lee el contenido | ✅ |
+| Alteración del mensaje se detecta (GCM) | ✅ |
+| Quien conoce el código lee todo el chat | ⚠️ por diseño (clave de grupo) |
+| Suplantación de identidad | ❌ pendiente (sin firmas) |
+| Forward secrecy (clave por sesión) | ❌ pendiente (X25519) |
+
+**Limitación honesta:** es una clave de grupo. Si alguien filtra el código, lee la sala. Para el caso de uso (grupo chico, encuentro presencial, mensajes efímeros) es el intercambio correcto entre seguridad y fricción.
+
+### Evolución prevista
+
+- X25519 por par + rotación de clave para forward secrecy.
+- Identidad firmada (fingerprint visual estilo Signal) para evitar suplantación.
+- QR para compartir el código sin dictarlo.
 
 ## Lo implementado
 
@@ -98,12 +106,15 @@ payload = AES-256-GCM(
 - [x] `MeshRouter`: dedup LRU, TTL, originId, store-and-forward
 - [x] Múltiples vínculos BLE simultáneos (salientes y entrantes)
 - [x] Reenvío excluyendo el link de origen
-- [x] Métricas: vínculos, relayados, salto máximo
+- [x] **Cifrado E2E con clave de sala** (AES-256-GCM + PBKDF2)
+- [x] Sala configurable por código, con rotación ("Sala nueva")
+- [x] Tests unitarios de crypto, framing, ensamblado y router en CI
+- [x] Métricas: vínculos, relayados, salto máximo, no descifrables
 - [x] UI muestra los saltos de cada mensaje
 
 ## Pendiente
 
-- [ ] Cifrado E2E (bloqueante)
+- [ ] Forward secrecy por par (X25519) e identidad firmada
 - [ ] ACK / confirmación de entrega
 - [ ] Duty cycle de scan/advertise
 - [ ] Priorización: texto > control

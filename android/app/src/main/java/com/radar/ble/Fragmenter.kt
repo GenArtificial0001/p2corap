@@ -51,7 +51,7 @@ class MessageAssembler {
     fun accept(packet: ByteArray): ByteArray? {
         if (packet.size <= Fragmenter.HEADER_SIZE) return null
 
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = System.currentTimeMillis()
         if (lastUpdateMs != 0L && now - lastUpdateMs > TIMEOUT_MS) reset()
         lastUpdateMs = now
 

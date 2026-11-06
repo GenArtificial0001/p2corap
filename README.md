@@ -17,6 +17,7 @@ Cada dispositivo con la app **extiende la red**: los mensajes se reenvían de te
 | **Sesión = conexión** | Al caer el vínculo GATT, el historial se purga. |
 | **Doble rol** | Cada dispositivo es Peripheral (GATT server) y Central (GATT client) a la vez. |
 | **Malla** | Hasta 3 saltos por mensaje, con dedup y store-and-forward. |
+| **Cifrado** | AES-256-GCM con clave derivada de un código de sala. Los relays no leen. |
 
 ## Estructura
 
@@ -26,6 +27,7 @@ android/
   app/src/main/java/com/radar/
     ble/                    Advertising, scanning, GATT server y client
     mesh/                   Paquete de malla, dedup, TTL, store-and-forward
+    crypto/                 Clave de sala, AES-256-GCM, código legible
     chat/                   Modelo de mensaje + repositorio volátil
     session/                Vínculos simultáneos, handshake y ruteo
     ui/                     UI Compose mínima
@@ -54,6 +56,23 @@ Detalle completo en [`docs/02-gatt.md`](docs/02-gatt.md).
 - Hasta 3 conexiones salientes simultáneas por nodo.
 
 > 🔴 **Límite de seguridad:** sin cifrado extremo a extremo, los nodos intermedios leen el texto. Es el próximo bloqueante. Ver [`docs/05-mesh.md`](docs/05-mesh.md).
+
+## Cifrado
+
+Cada mensaje viaja como `nonce || AES-256-GCM(texto)`. La clave se deriva de un **código de sala** que los participantes comparten fuera de banda:
+
+```
+Sala · 7K3M9-QX2AB-...
+
+Todos los dispositivos deben usar el mismo código.
+```
+
+- Los nodos intermedios reenvían ciphertext que no pueden descifrar.
+- Código inválido o mensaje alterado → se descarta (tag GCM).
+- La clave vive solo en RAM; al cerrar la app se pierde.
+- "Sala nueva" genera otro código y purga el chat.
+
+Es una **clave de grupo**: quien tenga el código lee la sala. Forward secrecy por par (X25519) está en el roadmap.
 
 ## Compilar
 

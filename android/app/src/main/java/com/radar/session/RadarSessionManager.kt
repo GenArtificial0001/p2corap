@@ -8,6 +8,7 @@ import com.radar.ble.RadarBleManager
 import com.radar.ble.RadarGattClient
 import com.radar.ble.RadarGattServer
 import com.radar.chat.VolatileChatRepository
+import com.radar.crypto.MeshCrypto
 import com.radar.mesh.MeshPacket
 import com.radar.mesh.MeshRouter
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,7 +23,9 @@ data class MeshStats(
     val delivered: Int = 0,
     val relayed: Int = 0,
     val maxHop: Int = 0,
-    val pending: Int = 0
+    val pending: Int = 0,
+    /** Paquetes reenviados que no pudimos descifrar (otra sala o manipulación). */
+    val undecryptable: Int = 0
 )
 
 /**
@@ -42,6 +45,11 @@ class RadarSessionManager(context: Context) {
 
     private val _stats = MutableStateFlow(MeshStats())
     val stats: StateFlow<MeshStats> = _stats.asStateFlow()
+
+    private val crypto = MeshCrypto()
+
+    private val _roomCode = MutableStateFlow(crypto.startNewRoom())
+    val roomCode: StateFlow<String> = _roomCode.asStateFlow()
 
     /** Identidad efímera del proceso: no se persiste (Zero-Storage). */
     private val selfId: Int = Random.nextInt(1, Int.MAX_VALUE)
@@ -131,14 +139,33 @@ class RadarSessionManager(context: Context) {
     // -------------------------------------------------------------- mensajes
 
     fun send(text: String) {
-        val trimmed = text.trim()
+        val trimmed = text.trim().take(MAX_PLAINTEXT_CHARS)
         if (trimmed.isEmpty()) return
         if (peers.isEmpty()) return
 
-        val packet = router.origin(trimmed)
+        val plaintext = trimmed.toByteArray(Charsets.UTF_8)
+        val payload = crypto.encrypt(plaintext) ?: return
+
+        val packet = router.origin(payload)
         chat.append(trimmed, isMine = true, hops = 0)
         broadcast(packet.encode(), exclude = null)
         updateStats()
+    }
+
+    /** Cambia la sala actual. Devuelve false si el código es inválido. */
+    fun joinRoom(code: String): Boolean {
+        val joined = crypto.join(code)
+        if (joined) {
+            _roomCode.value = crypto.currentCode()
+            chat.purgeSession()
+        }
+        return joined
+    }
+
+    /** Genera una sala nueva con código aleatorio. */
+    fun newRoom() {
+        _roomCode.value = crypto.startNewRoom()
+        chat.purgeSession()
     }
 
     private fun onFrame(address: String, frame: ByteArray) {
@@ -151,12 +178,22 @@ class RadarSessionManager(context: Context) {
 
             is MeshRouter.Decision.Relay -> {
                 if (decision.deliver) {
-                    chat.append(packet.text(), isMine = false, hops = packet.hopCount)
-                    _stats.update {
-                        it.copy(
-                            delivered = it.delivered + 1,
-                            maxHop = maxOf(it.maxHop, packet.hopCount)
+                    val decrypted = crypto.decrypt(packet.payload)
+                    if (decrypted != null) {
+                        chat.append(
+                            String(decrypted, Charsets.UTF_8),
+                            isMine = false,
+                            hops = packet.hopCount
                         )
+                        _stats.update {
+                            it.copy(
+                                delivered = it.delivered + 1,
+                                maxHop = maxOf(it.maxHop, packet.hopCount)
+                            )
+                        }
+                    } else {
+                        // De otra sala o manipulado: se reenvía, no se muestra.
+                        _stats.update { it.copy(undecryptable = it.undecryptable + 1) }
                     }
                 }
 
@@ -257,6 +294,9 @@ class RadarSessionManager(context: Context) {
 
     private companion object {
         const val AVATAR_ID: Byte = 1
+
+        /** Deja margen para nonce + tag GCM dentro del payload de 512 bytes. */
+        const val MAX_PLAINTEXT_CHARS = 400
 
         /**
          * Conexiones salientes simultáneas. Android soporta varias, pero cada

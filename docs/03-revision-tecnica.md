@@ -5,7 +5,7 @@ Revisión del documento *"Arquitectura Base y Especificación Técnica: Radar Ap
 | ID | Hallazgo | Severidad | Estado |
 |---|---|---|---|
 | R-01 | UUIDs en rango reservado del Bluetooth SIG | 🔴 Alta | Pendiente |
-| R-02 | "Cifrado temporal" sin definir | 🔴 Alta | Pendiente |
+| R-02 | "Cifrado temporal" sin definir | 🔴 Alta | ✅ Clave de sala (E2E de grupo) |
 | R-03 | Sin ACK ni retransmisión: pérdida silenciosa | 🔴 Alta | Mitigado parcial |
 | R-04 | iOS no sostiene advertising en background | 🔴 Alta | Pendiente |
 | R-05 | "Zero-Storage estricto" no es garantizable en ART | 🟠 Media | Documentado |
@@ -37,7 +37,9 @@ La spec dice "paquetes de texto cifrados temporalmente", pero no define:
 - **Qué algoritmo.** BLE ya cifra el enlace (LESC), pero solo si hay pairing; sin pairing, el tráfico va en claro.
 - **Contra qué amenaza.** Suplantación, replay, lectura pasiva.
 
-**Propuesta:** X25519 efímero por sesión (intercambio en `Connection Control`), HKDF-SHA256 y AES-256-GCM por mensaje con nonce = contador. Sin pairing del sistema: la clave muere con la sesión. Esto además da **autenticidad** (R-09) si se firma el handshake con la identidad de largo plazo.
+**Resuelto (v1):** clave de sala compartida fuera de banda. `AES-256-GCM` con nonce aleatorio y clave derivada del código vía `PBKDF2-HMAC-SHA256` (120k iteraciones). Los relays reenvían ciphertext sin poder leerlo. Ver `05-mesh.md`.
+
+**Pendiente (v2):** X25519 efímero por par para forward secrecy + identidad firmada contra suplantación.
 
 ## R-03 — Sin ACK, sin retransmisión 🔴
 

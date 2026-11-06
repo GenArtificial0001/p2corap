@@ -36,12 +36,15 @@ class MeshRouter(
     private val pending = ArrayDeque<PendingPacket>()
 
     /** Crea el paquete de un mensaje propio y lo marca como visto. */
-    fun origin(text: String): MeshPacket {
-        val packet = MeshPacket.text(
+    fun origin(payload: ByteArray): MeshPacket {
+        val packet = MeshPacket(
+            type = MeshPacket.TYPE_TEXT,
             messageId = kotlin.random.Random.nextLong(),
             originId = selfId,
             ttl = defaultTtl,
-            payload = text
+            hopCount = 0,
+            timestamp = System.currentTimeMillis(),
+            payload = payload
         )
         seen[packet.messageId] = now() + SEEN_TTL_MS
         return packet

@@ -7,7 +7,7 @@
 | Service | `0000FA01-0000-1000-8000-00805F9B34FB` | — | — |
 | Profile Info | `0000FA02-…` | READ | `[lenAlias][alias UTF-8][avatarId]` |
 | Connection Control | `0000FA03-…` | WRITE | `[opcode][sessionId:4]` |
-| Message Tx/Rx | `0000FA04-…` | WRITE, NOTIFY | framing propio (abajo) |
+| Message Tx/Rx | `0000FA04-…` | WRITE, NOTIFY | `nonce ‖ AES-256-GCM(MeshPacket)` |
 | CCCD | `00002902-…` | READ, WRITE | habilitar notificaciones |
 
 > ⚠️ El rango `0xFA00–0xFAFF` está reservado por el Bluetooth SIG. Ver **R-01** en `03-revision-tecnica.md`: antes de publicar hay que migrar a UUIDs aleatorios de 128 bits.
@@ -26,6 +26,8 @@
 ## Framing de mensajes
 
 El MTU por defecto de BLE es **23 bytes**, lo que deja **20 bytes útiles** por escritura. Un mensaje de chat no entra ahí: hay que fragmentar.
+
+El payload es **opaco**: contiene un `MeshPacket` ya cifrado (`nonce ‖ ciphertext`). El framing solo corta bytes; no interpreta el contenido.
 
 ```
 ┌────────┬────────┬─────────┬──────────────────┐

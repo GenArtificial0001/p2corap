@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -81,6 +82,7 @@ private fun RadarRoot(session: RadarSessionManager) {
     val advertising by session.ble.advertising.collectAsState()
     val scanning by session.ble.scanning.collectAsState()
     val stats by session.stats.collectAsState()
+    val roomCode by session.roomCode.collectAsState()
 
     val required = remember { requiredPermissions() }
     var granted by remember {
@@ -92,6 +94,7 @@ private fun RadarRoot(session: RadarSessionManager) {
     }
     var started by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
+    var showRoomDialog by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -137,6 +140,14 @@ private fun RadarRoot(session: RadarSessionManager) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Text(
+                    text = "Sala · $roomCode",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = { showRoomDialog = true }) {
+                Text("Sala")
             }
             if (started) {
                 TextButton(onClick = {
@@ -155,6 +166,22 @@ private fun RadarRoot(session: RadarSessionManager) {
 
         Spacer(Modifier.height(12.dp))
         HorizontalDivider()
+
+        if (showRoomDialog) {
+            RoomDialog(
+                current = roomCode,
+                onJoin = { code ->
+                    val ok = session.joinRoom(code)
+                    if (ok) showRoomDialog = false
+                    ok
+                },
+                onNewRoom = {
+                    session.newRoom()
+                    showRoomDialog = false
+                },
+                onDismiss = { showRoomDialog = false }
+            )
+        }
 
         if (connected) {
             ChatPanel(
@@ -305,6 +332,60 @@ private fun ChatPanel(
             }
         }
     }
+}
+
+@Composable
+private fun RoomDialog(
+    current: String,
+    onJoin: (String) -> Boolean,
+    onNewRoom: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var code by remember { mutableStateOf(current) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sala cifrada") },
+        text = {
+            Column {
+                Text(
+                    "Todos los dispositivos deben usar el mismo código. " +
+                        "La clave nunca viaja por la red: sin el código, " +
+                        "los relays solo ven datos cifrados.",
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = {
+                        code = it
+                        error = null
+                    },
+                    label = { Text("Código de sala") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (!onJoin(code)) error = "Código inválido: 20 caracteres (A-Z, 0-9)"
+            }) {
+                Text("Unirse")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onNewRoom) { Text("Sala nueva") }
+                TextButton(onClick = onDismiss) { Text("Cancelar") }
+            }
+        }
+    )
 }
 
 private fun requiredPermissions(): Array<String> = buildList {

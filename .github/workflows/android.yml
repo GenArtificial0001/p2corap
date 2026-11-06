@@ -55,7 +55,7 @@ jobs:
         working-directory: android
         run: |
           set +e
-          gradle assembleDebug --no-daemon --console=plain --stacktrace > /tmp/build.log 2>&1
+          gradle testDebugUnitTest assembleDebug --no-daemon --console=plain --stacktrace > /tmp/build.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
             {
