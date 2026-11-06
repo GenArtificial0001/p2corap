@@ -74,8 +74,9 @@ class FragmenterTest {
 
         var result: ByteArray? = null
         frames.forEach { frame ->
-            assembler.accept(frame)
-            assembler.accept(frame)?.let { result = it }
+            repeat(2) {
+                assembler.accept(frame)?.let { result = it }
+            }
         }
 
         assertArrayEquals(bytes, result)
