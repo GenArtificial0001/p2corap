@@ -262,16 +262,6 @@ class RadarGattClient(
             }
         }
 
-        override fun onDescriptorWrite(
-            g: BluetoothGatt,
-            descriptor: BluetoothGattDescriptor,
-            status: Int
-        ) {
-            if (descriptor.uuid == RadarUuids.CCCD && status == BluetoothGatt.GATT_SUCCESS) {
-                onReady()
-            }
-        }
-
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "MTU negociado: $mtu")
