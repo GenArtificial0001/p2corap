@@ -22,8 +22,8 @@
 - [x] Manejo de errores GATT con códigos y reintento
 - [x] Tests JVM del framing, router, crypto y repositorio volátil
 - [x] Sesión fuera de la Activity (`RadarViewModel`) — sobrevive la rotación
+- [x] `FLAG_SECURE` + `setRecentsScreenshotEnabled(false)`
 - [ ] Compilar y correr en dos dispositivos físicos (**requiere hardware**)
-- [ ] `FLAG_SECURE` + `setRecentsScreenshotEnabled(false)`
 
 ## Fase 3 — Seguridad
 - [x] Cifrado E2E con clave de sala (AES-256-GCM + PBKDF2) — R-02

@@ -4,8 +4,9 @@ package com.radar.ble
  * Framing de paquetes sobre el characteristic Message Tx/Rx.
  *
  * Cada fragmento: [seq:1][total:1][flags:1][payload:<=17]
- * El receptor reensambla hasta `total`. Sin ACK: si falta un fragmento,
- * el mensaje se descarta por timeout (ver R-03).
+ * El receptor reensambla solo cuando están todos los fragmentos; si falta
+ * alguno, el mensaje se descarta por timeout. La confirmación de entrega es
+ * de aplicación (MeshPacket.TYPE_ACK), no por fragmento.
  *
  * El framing transporta bytes opacos: el contenido real es un MeshPacket.
  */

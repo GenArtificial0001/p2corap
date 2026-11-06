@@ -72,7 +72,7 @@ En ART, `String` es inmutable y el GC no es determinista. Sobrescribir "la RAM" 
 - Purga explícita en `onConnectionStateChange` y en `onStop`.
 - Sin logs de contenido (solo metadatos).
 
-**Lo que falta:** `FLAG_SECURE` para bloquear screenshots, y evaluar `setRecentsScreenshotEnabled(false)`.
+**Lo que falta:** nada crítico. `FLAG_SECURE` y `setRecentsScreenshotEnabled(false)` están activos en `MainActivity`, así que el chat no aparece en capturas ni en el carrusel de recientes (API 33+).
 
 ## R-06 — `System.gc()` 🟠
 

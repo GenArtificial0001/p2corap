@@ -62,7 +62,7 @@ La memoria de dedup es un LRU de 512 IDs con TTL de 5 minutos, en RAM (coherente
 |---|---|
 | **Cobertura** | Se extiende, pero solo si hay dispositivos en el medio. Sin gente, no hay red. |
 | **Latencia** | Oportunista. Un mensaje puede tardar segundos o nunca llegar si no hay puente. |
-| **Entrega** | Sin ACK extremo a extremo: no hay garantía. |
+| **Entrega** | ACK de aplicación propagado por la malla (`✓ entregado`). No hay retransmisión si el ACK no llega. |
 | **Ancho de banda** | BLE GATT práctico: 1–10 KB/s por vínculo. Texto sí; imágenes no. |
 | **Batería** | Relay constante = consumo constante. El duty cycle es obligatorio en producción. |
 | **Orden** | Los mensajes pueden llegar desordenados. No hay reloj global. |
@@ -98,7 +98,6 @@ clave_sala = PBKDF2-HMAC-SHA256(código, salt="radar-v1", 120k iteraciones)
 
 - X25519 por par + rotación de clave para forward secrecy.
 - Identidad firmada (fingerprint visual estilo Signal) para evitar suplantación.
-- QR para compartir el código sin dictarlo.
 
 ## Lo implementado
 
@@ -109,13 +108,15 @@ clave_sala = PBKDF2-HMAC-SHA256(código, salt="radar-v1", 120k iteraciones)
 - [x] **Cifrado E2E con clave de sala** (AES-256-GCM + PBKDF2)
 - [x] Sala configurable por código, con rotación ("Sala nueva")
 - [x] Tests unitarios de crypto, framing, ensamblado y router en CI
-- [x] Métricas: vínculos, relayados, salto máximo, no descifrables
+- [x] Métricas: vínculos, relayados, salto máximo, no descifrables, ACK y cola
 - [x] UI muestra los saltos de cada mensaje
+- [x] ACK de entrega (`TYPE_ACK`) y marca `✓ entregado` en la UI
+- [x] QR para compartir la sala (generar, copiar, compartir y escanear)
 
 ## Pendiente
 
 - [ ] Forward secrecy por par (X25519) e identidad firmada
-- [ ] ACK / confirmación de entrega
+- [ ] Retransmisión con backoff si el ACK no llega
 - [ ] Duty cycle de scan/advertise
 - [ ] Priorización: texto > control
 - [ ] Limitar reenvíos por nodo y por unidad de tiempo (anti-abuso)

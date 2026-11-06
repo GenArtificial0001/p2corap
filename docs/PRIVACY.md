@@ -39,7 +39,7 @@ No hay `Room`, `SQLite`, `SharedPreferences`, `DataStore` ni `SavedStateHandle` 
 - **Metadatos**: `originId` es aleatorio por proceso, pero un relay puede correlacionar tráfico durante la sesión. TTL y timestamps revelan la topología aproximada.
 - **RAM no es borrado seguro**: en ART no se puede garantizar la sobrescritura de `String` ni forzar el GC (R-05). Se sueltan las referencias y el sistema hace el resto.
 - **Alias no autenticado**: sin firma, cualquiera puede usar el mismo alias (R-09). No hay verificación de identidad.
-- **Screenshots**: la app aún no activa `FLAG_SECURE`; el sistema puede capturar la pantalla.
+- **Screenshots**: `FLAG_SECURE` bloquea capturas dentro de la app y `setRecentsScreenshotEnabled(false)` (API 33+) la oculta del carrusel de recientes. Un dispositivo rooteado o con un grabador externo sigue pudiendo capturar la pantalla física.
 - **Sistema operativo**: el SO puede volcar memoria del proceso en un tombstone o swap. Eso queda fuera del control de la app.
 
 ## Permisos
