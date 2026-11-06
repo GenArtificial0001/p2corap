@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Radar</string>
+    <string name="service_channel_name">Radar activo</string>
+    <string name="service_title">Radar está buscando pares</string>
+    <string name="service_text">Mensajería efímera por Bluetooth Low Energy</string>
+</resources>
