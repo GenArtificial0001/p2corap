@@ -78,7 +78,7 @@ class MessageAssembler {
 
         val out = target.copyOf(offset + chunk.size)
         reset()
-        return out.ifEmpty { null }
+        return if (out.isEmpty()) null else out
     }
 
     fun reset() {
