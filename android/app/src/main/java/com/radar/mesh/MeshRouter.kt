@@ -36,9 +36,9 @@ class MeshRouter(
     private val pending = ArrayDeque<PendingPacket>()
 
     /** Crea el paquete de un mensaje propio y lo marca como visto. */
-    fun origin(payload: ByteArray): MeshPacket {
+    fun origin(payload: ByteArray, type: Int = MeshPacket.TYPE_TEXT): MeshPacket {
         val packet = MeshPacket(
-            type = MeshPacket.TYPE_TEXT,
+            type = type,
             messageId = kotlin.random.Random.nextLong(),
             originId = selfId,
             ttl = defaultTtl,
@@ -50,6 +50,12 @@ class MeshRouter(
         return packet
     }
 
+    /** ACK de entrega: 8 bytes con el messageId confirmado. */
+    fun originAck(ackFor: Long): MeshPacket {
+        val payload = java.nio.ByteBuffer.allocate(8).putLong(ackFor).array()
+        return origin(payload, MeshPacket.TYPE_ACK)
+    }
+
     fun onReceive(packet: MeshPacket): Decision {
         pruneSeen()
 
@@ -59,7 +65,7 @@ class MeshRouter(
         // Eco de un mensaje propio: ya se entregó localmente al enviarlo.
         if (packet.originId == selfId) return Decision.Drop
 
-        val deliver = packet.type == MeshPacket.TYPE_TEXT
+        val deliver = packet.type == MeshPacket.TYPE_TEXT || packet.type == MeshPacket.TYPE_ACK
 
         // ttl = saltos que todavía puede dar. Con ttl 1 llega y no reenvía.
         val forward = if (packet.ttl > 1) {
@@ -68,7 +74,9 @@ class MeshRouter(
             null
         }
 
-        forward?.let(::enqueue)
+        // Solo el texto se guarda para un vecino futuro: los ACK caducan con
+        // el vínculo y no tiene sentido reenviarlos minutos después.
+        if (forward != null && packet.type == MeshPacket.TYPE_TEXT) enqueue(forward)
 
         return Decision.Relay(deliver, forward)
     }

@@ -20,8 +20,9 @@ import java.nio.ByteBuffer
  *  26..   payload      n   (UTF-8, texto plano por ahora)
  * ```
  *
- * El payload va SIN cifrar. Es una limitación consciente y documentada:
- * en una malla los nodos intermedios ven el contenido (ver docs/05-mesh.md).
+ * El payload viaja cifrado con AES-256-GCM (clave derivada del código de
+ * sala): los nodos intermedios reenvían ciphertext que no pueden leer.
+ * Ver docs/05-mesh.md.
  */
 data class MeshPacket(
     val type: Int,
@@ -52,6 +53,7 @@ data class MeshPacket(
     companion object {
         const val VERSION = 1
         const val TYPE_TEXT = 1
+        const val TYPE_ACK = 2
         const val HEADER_SIZE = 26
         const val MAX_PAYLOAD = 512
 

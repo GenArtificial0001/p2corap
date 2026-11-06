@@ -5,15 +5,14 @@ import java.util.UUID
 /**
  * Fuente única de verdad de los UUIDs del perfil Radar.
  *
- * TODO(R-01): el rango 0xFA00-0xFAFF está reservado por el Bluetooth SIG.
- * Antes de publicar hay que migrar a UUIDs aleatorios de 128 bits. Al estar
- * centralizados acá, el cambio no toca el resto del código.
+ * UUIDs aleatorios de 128 bits (RFC 4122 v4), fuera de cualquier rango
+ * reservado por el Bluetooth SIG. Resuelve R-01 de la revisión técnica.
  */
 object RadarUuids {
-    val SERVICE: UUID = UUID.fromString("0000FA01-0000-1000-8000-00805F9B34FB")
-    val PROFILE_CHAR: UUID = UUID.fromString("0000FA02-0000-1000-8000-00805F9B34FB")
-    val CONTROL_CHAR: UUID = UUID.fromString("0000FA03-0000-1000-8000-00805F9B34FB")
-    val MESSAGE_CHAR: UUID = UUID.fromString("0000FA04-0000-1000-8000-00805F9B34FB")
+    val SERVICE: UUID = UUID.fromString("7D022782-8CD9-4FD0-8648-780D092EF19B")
+    val PROFILE_CHAR: UUID = UUID.fromString("23ECFC0A-133C-4E13-9151-C8250E514414")
+    val CONTROL_CHAR: UUID = UUID.fromString("DBD2BE6F-0278-47CE-AA7E-137BF8F40F6F")
+    val MESSAGE_CHAR: UUID = UUID.fromString("77188928-C80D-4CB5-8C3B-B73C0D1B4585")
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
 
     /** Payload útil con MTU 23 (23 - 3 de overhead ATT). */

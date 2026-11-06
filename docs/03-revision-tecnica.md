@@ -4,9 +4,9 @@ Revisión del documento *"Arquitectura Base y Especificación Técnica: Radar Ap
 
 | ID | Hallazgo | Severidad | Estado |
 |---|---|---|---|
-| R-01 | UUIDs en rango reservado del Bluetooth SIG | 🔴 Alta | Pendiente |
+| R-01 | UUIDs en rango reservado del Bluetooth SIG | 🔴 Alta | ✅ Resuelto |
 | R-02 | "Cifrado temporal" sin definir | 🔴 Alta | ✅ Clave de sala (E2E de grupo) |
-| R-03 | Sin ACK ni retransmisión: pérdida silenciosa | 🔴 Alta | Mitigado parcial |
+| R-03 | Sin ACK ni retransmisión: pérdida silenciosa | 🔴 Alta | ✅ ACK de aplicación |
 | R-04 | iOS no sostiene advertising en background | 🔴 Alta | Pendiente |
 | R-05 | "Zero-Storage estricto" no es garantizable en ART | 🟠 Media | Documentado |
 | R-06 | `System.gc()` es antipatrón | 🟠 Media | Corregido |
@@ -14,8 +14,8 @@ Revisión del documento *"Arquitectura Base y Especificación Técnica: Radar Ap
 | R-08 | Sin fragmentación ni negociación de MTU | 🟠 Media | Implementado |
 | R-09 | Identidad sin autenticación: suplantación trivial | 🟠 Media | Pendiente |
 | R-10 | Permisos y background restrictions no especificados | 🟠 Media | Implementado |
-| R-11 | Scan agresivo: batería y `ScanFilter` sin dedup | 🟡 Baja | Implementado |
-| R-12 | RSSI ≠ distancia | 🟡 Baja | Documentado |
+| R-11 | Scan agresivo: batería y `ScanFilter` sin dedup | 🟡 Baja | ✅ Implementado |
+| R-12 | RSSI ≠ distancia | 🟡 Baja | ✅ Implementado |
 | R-13 | Una sola sesión; sin multiplexación | 🟡 Baja | Por diseño |
 | R-14 | Advertising sin nombre: correcto, pero cerca del límite | 🟡 Baja | OK |
 | R-15 | Errores del snippet original (Kotlin) | 🟡 Baja | Corregido |
@@ -27,7 +27,14 @@ Revisión del documento *"Arquitectura Base y Especificación Técnica: Radar Ap
 
 `0000FA01-0000-1000-8000-00805F9B34FB` usa la base UUID del SIG con un alias de 16 bits (`0xFA01`). Los alias de 16 bits **no son asignables libremente**: el rango `0xFA00–0xFAFF` está reservado y usarlo puede colisionar con servicios de otros fabricantes.
 
-**Acción:** generar UUIDs aleatorios de 128 bits (`uuidgen`) y centralizarlos en `RadarUuids`. Es un cambio de una línea por UUID.
+**Resuelto:** los cuatro UUIDs del perfil se generaron con `uuidgen` (v4, 128 bits aleatorios) y se centralizaron en `RadarUuids`:
+
+```
+Servicio     7D022782-8CD9-4FD0-8648-780D092EF19B
+Perfil       23ECFC0A-133C-4E13-9151-C8250E514414
+Control      DBD2BE6F-0278-47CE-AA7E-137BF8F40F6F
+Mensajes     77188928-C80D-4CB5-8C3B-B73C0D1B4585
+```
 
 ## R-02 — El cifrado no está especificado 🔴
 
@@ -45,8 +52,8 @@ La spec dice "paquetes de texto cifrados temporalmente", pero no define:
 
 `WRITE` sin respuesta no confirma entrega; `WRITE` con respuesta confirma a nivel ATT pero no a nivel aplicación. Un mensaje de 200 bytes son ~12 fragmentos: la probabilidad de perder uno crece rápido con la distancia.
 
-**Mitigación actual:** timeout de reensamblado y descarte limpio (no se muestra un mensaje corrupto).
-**Pendiente:** ACK acumulativo + retransmisión con backoff, o pasar a `L2CAP CoC` (API 29+) que da un socket orientado a stream y elimina el framing manual.
+**Mitigación actual:** ACK a nivel aplicación. Al entregar un `TYPE_TEXT`, el receptor responde un `TYPE_ACK` con los 8 bytes del `messageId`; el ACK viaja por la malla igual que un mensaje (TTL, dedup) y el emisor marca el mensaje como `✓ entregado`. El ACK se genera en `RadarSessionManager.onText()` y se procesa en `onAck()`. Timeout de reensamblado y descarte limpio siguen activos.
+**Pendiente:** retransmisión con backoff si el ACK no llega en N segundos, o pasar a `L2CAP CoC` (API 29+) que da un socket orientado a stream y elimina el framing manual.
 
 ## R-04 — iOS en background 🔴
 
@@ -96,17 +103,19 @@ Todo eso está implementado en `ble/`.
 | 31+ | `android:usesPermissionFlags="neverForLocation"` si no se deriva ubicación |
 | 34+ | Foreground service tipo `connectedDevice` + permiso `FOREGROUND_SERVICE_CONNECTED_DEVICE` |
 
-Doze y los ahorros de energía de cada OEM matan el advertising si no hay foreground service. El manifiesto ya lo declara; falta el servicio.
+Doze y los ahorros de energía de cada OEM matan el advertising si no hay foreground service. **Implementado:** `RadarForegroundService` con `foregroundServiceType="connectedDevice"`, `ServiceCompat.startForeground(...)` y notificación de baja importancia. Se inicia en `RadarSessionManager.start()` y se detiene en `stop()`.
 
 ## R-11 — Batería 🟡
 
-`SCAN_MODE_LOW_LATENCY` + `ADVERTISE_MODE_LOW_LATENCY` de forma continua vacía la batería en horas. Para producción: duty cycle (ej. 10 s scan / 20 s pausa), `ADVERTISE_MODE_BALANCED`, y bajar a `LOW_POWER` cuando no hay peers.
+`SCAN_MODE_LOW_LATENCY` + `ADVERTISE_MODE_LOW_LATENCY` de forma continua vacía la batería en horas. **Implementado:** `SCAN_MODE_BALANCED` y `ADVERTISE_MODE_BALANCED` con `TX_POWER_HIGH`, y dedup por `address` con `lastSeen` (`prune(ttlMs)`). Pendiente: duty cycle explícito (10 s scan / 20 s pausa) y bajar a `LOW_POWER` sin peers.
 
 También faltaba **deduplicar** resultados: el stack entrega el mismo dispositivo varias veces por segundo. `RadarBleManager` mantiene un mapa por `address` con `lastSeen`.
 
 ## R-12 — RSSI 🟡
 
-RSSI varía ±10 dB con el cuerpo, la mano y la orientación. Sirve para ordenar por cercanía aproximada, **no** para medir metros. Cualquier UI que muestre "3,2 m" está mintiendo. Mostrar barras o "cerca/lejos".
+RSSI varía ±10 dB con el cuerpo, la mano y la orientación. Sirve para ordenar por cercanía aproximada, **no** para medir metros. Cualquier UI que muestre "3,2 m" está mintiendo.
+
+**Implementado:** la UI muestra `cerca / medio / lejos` derivado de bandas de RSSI (`RadarPeer.proximity`) y el valor en dBm, nunca una distancia.
 
 ## R-15 — Bugs del código de ejemplo 🟡
 

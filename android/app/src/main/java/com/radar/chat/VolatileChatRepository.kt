@@ -25,8 +25,17 @@ class VolatileChatRepository {
     private val _peerAlias = MutableStateFlow<String?>(null)
     val peerAlias: StateFlow<String?> = _peerAlias.asStateFlow()
 
-    fun append(text: String, isMine: Boolean, hops: Int = 0) {
-        _messages.update { it + Message(text, isMine, System.currentTimeMillis(), hops) }
+    fun append(id: Long, text: String, isMine: Boolean, hops: Int = 0) {
+        _messages.update {
+            it + Message(id, text, isMine, System.currentTimeMillis(), hops, delivered = false)
+        }
+    }
+
+    /** Marca como entregado el mensaje propio cuyo ACK llegó. */
+    fun markDelivered(id: Long) {
+        _messages.update { list ->
+            list.map { if (it.isMine && it.id == id) it.copy(delivered = true) else it }
+        }
     }
 
     fun setConnected(value: Boolean) {

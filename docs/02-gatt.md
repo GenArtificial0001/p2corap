@@ -4,13 +4,13 @@
 
 | Rol | UUID | Propiedades | Payload |
 |---|---|---|---|
-| Service | `0000FA01-0000-1000-8000-00805F9B34FB` | — | — |
-| Profile Info | `0000FA02-…` | READ | `[lenAlias][alias UTF-8][avatarId]` |
-| Connection Control | `0000FA03-…` | WRITE | `[opcode][sessionId:4]` |
-| Message Tx/Rx | `0000FA04-…` | WRITE, NOTIFY | `nonce ‖ AES-256-GCM(MeshPacket)` |
+| Service | `7D022782-8CD9-4FD0-8648-780D092EF19B` | — | — |
+| Profile Info | `23ECFC0A-133C-4E13-9151-C8250E514414` | READ | `[lenAlias][alias UTF-8][avatarId]` |
+| Connection Control | `DBD2BE6F-0278-47CE-AA7E-137BF8F40F6F` | WRITE | `[opcode][sessionId:4]` |
+| Message Tx/Rx | `77188928-C80D-4CB5-8C3B-B73C0D1B4585` | WRITE, NOTIFY | `nonce ‖ AES-256-GCM(MeshPacket)` |
 | CCCD | `00002902-…` | READ, WRITE | habilitar notificaciones |
 
-> ⚠️ El rango `0xFA00–0xFAFF` está reservado por el Bluetooth SIG. Ver **R-01** en `03-revision-tecnica.md`: antes de publicar hay que migrar a UUIDs aleatorios de 128 bits.
+> ✅ UUIDs aleatorios de 128 bits (v4), generados fuera del rango reservado del SIG. R-01 resuelto. Fuente única de verdad: `ble/RadarUuids.kt`.
 
 ## Opcodes del handshake
 

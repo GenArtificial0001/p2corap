@@ -12,10 +12,17 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.location.LocationManager
+import android.os.Build
 import android.os.ParcelUuid
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,14 +30,15 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Doble rol BLE: anuncia la presencia del dispositivo y escanea a los demás.
  *
- * Limitación de plataforma: advertising y scanning simultáneos funcionan en la
- * mayoría de los equipos, pero algunos OEM los matan en background. Para uso
- * sostenido hace falta el foreground service (ver RadarForegroundService).
+ * Usa modos BALANCED (no LOW_LATENCY) para no vaciar la batería en dos horas.
+ * El foreground service mantiene el proceso vivo; sin él, Doze corta el radio.
  */
 class RadarBleManager(private val context: Context) {
 
+    private val appContext = context.applicationContext
+
     private val manager =
-        context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 
     val adapter: BluetoothAdapter? get() = manager?.adapter
     val isSupported: Boolean get() = adapter != null
@@ -53,6 +61,33 @@ class RadarBleManager(private val context: Context) {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _bluetoothOn = MutableStateFlow(isEnabled)
+    val bluetoothOn: StateFlow<Boolean> = _bluetoothOn.asStateFlow()
+
+    private val adapterReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            val on = state == BluetoothAdapter.STATE_ON
+            _bluetoothOn.value = on
+            if (!on) {
+                stopAll()
+                _error.value = "Bluetooth apagado"
+            }
+        }
+    }
+
+    init {
+        runCatching {
+            ContextCompat.registerReceiver(
+                appContext,
+                adapterReceiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        }
+    }
+
     // ---------------------------------------------------------------- advertise
 
     @SuppressLint("MissingPermission")
@@ -68,13 +103,12 @@ class RadarBleManager(private val context: Context) {
         advertiser = adv
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .setTimeout(0)
             .build()
 
-        // Sin nombre de dispositivo: solo el UUID del servicio (R-14: entra justo).
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(RadarUuids.SERVICE))
@@ -82,7 +116,7 @@ class RadarBleManager(private val context: Context) {
 
         try {
             adv.startAdvertising(settings, data, advertiseCallback)
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             fail("Falta permiso BLUETOOTH_ADVERTISE")
         }
     }
@@ -116,6 +150,12 @@ class RadarBleManager(private val context: Context) {
     fun startScanning() {
         val bt = adapter ?: return fail("Bluetooth no disponible")
         if (!bt.isEnabled) return fail("Activá Bluetooth")
+
+        // En Android 11 y anteriores el scan BLE exige ubicación activa.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isLocationEnabled()) {
+            return fail("Activá la ubicación para escanear BLE")
+        }
+
         if (_scanning.value) return
 
         val sc = bt.bluetoothLeScanner ?: return fail("Scanner no disponible")
@@ -126,14 +166,14 @@ class RadarBleManager(private val context: Context) {
             .build()
 
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
             .setReportDelay(0)
             .build()
 
         try {
             sc.startScan(listOf(filter), settings, scanCallback)
             _scanning.value = true
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             fail("Falta permiso BLUETOOTH_SCAN")
         }
     }
@@ -193,6 +233,27 @@ class RadarBleManager(private val context: Context) {
         stopAdvertising()
         stopScanning()
         _peers.value = emptyList()
+    }
+
+    /** Libera el receiver. La sesión se encarga de llamarlo al cerrarse. */
+    @SuppressLint("MissingPermission")
+    fun close() {
+        runCatching { appContext.unregisterReceiver(adapterReceiver) }
+        stopAll()
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val lm = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            ?: return true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lm.isLocationEnabled
+        } else {
+            Settings.Secure.getInt(
+                appContext.contentResolver,
+                Settings.Secure.LOCATION_MODE,
+                Settings.Secure.LOCATION_MODE_OFF
+            ) != Settings.Secure.LOCATION_MODE_OFF
+        }
     }
 
     private fun fail(message: String) {

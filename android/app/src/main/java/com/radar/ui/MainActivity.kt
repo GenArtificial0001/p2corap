@@ -1,13 +1,21 @@
 package com.radar.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,13 +24,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -39,41 +48,41 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.radar.ble.RadarPeer
 import com.radar.chat.Message
-import com.radar.session.RadarSessionManager
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var session: RadarSessionManager
+    private val viewModel: RadarViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        session = RadarSessionManager(this)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    RadarRoot(session)
+                    RadarRoot(viewModel)
                 }
             }
         }
     }
-
-    override fun onDestroy() {
-        session.stop()
-        super.onDestroy()
-    }
 }
 
 @Composable
-private fun RadarRoot(session: RadarSessionManager) {
+private fun RadarRoot(vm: RadarViewModel) {
     val context = LocalContext.current
+    val session = vm.session
 
     val peers by session.ble.peers.collectAsState()
     val connected by session.chat.connected.collectAsState()
@@ -81,8 +90,10 @@ private fun RadarRoot(session: RadarSessionManager) {
     val error by session.ble.error.collectAsState()
     val advertising by session.ble.advertising.collectAsState()
     val scanning by session.ble.scanning.collectAsState()
+    val bluetoothOn by session.ble.bluetoothOn.collectAsState()
     val stats by session.stats.collectAsState()
     val roomCode by session.roomCode.collectAsState()
+    val running by session.running.collectAsState()
 
     val required = remember { requiredPermissions() }
     var granted by remember {
@@ -92,7 +103,6 @@ private fun RadarRoot(session: RadarSessionManager) {
             }
         )
     }
-    var started by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var showRoomDialog by remember { mutableStateOf(false) }
 
@@ -101,17 +111,25 @@ private fun RadarRoot(session: RadarSessionManager) {
     ) { result ->
         granted = result.values.all { it }
         if (granted) {
+            vm.stoppedByUser = false
             session.start()
-            started = true
         }
     }
 
-    LaunchedEffect(Unit) {
+    fun startIfPossible() {
         if (!granted) {
             launcher.launch(required)
+            return
+        }
+        vm.stoppedByUser = false
+        session.start()
+    }
+
+    LaunchedEffect(Unit) {
+        if (granted) {
+            if (!vm.stoppedByUser && !session.running.value) session.start()
         } else {
-            session.start()
-            started = true
+            launcher.launch(required)
         }
     }
 
@@ -126,6 +144,7 @@ private fun RadarRoot(session: RadarSessionManager) {
                 Text(
                     text = when {
                         !granted -> "Permisos pendientes"
+                        !bluetoothOn -> "Bluetooth apagado"
                         stats.links > 0 -> "Malla activa · ${stats.links} vínculo(s)"
                         scanning || advertising -> "Buscando pares…"
                         else -> "Radar detenido"
@@ -135,7 +154,8 @@ private fun RadarRoot(session: RadarSessionManager) {
                 )
                 if (stats.links > 0) {
                     Text(
-                        text = "${stats.relayed} relayado(s) · salto máx ${stats.maxHop}",
+                        text = "${stats.relayed} relayado(s) · salto máx ${stats.maxHop}" +
+                            if (stats.queued > 0) " · ${stats.queued} en cola" else "",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -149,10 +169,10 @@ private fun RadarRoot(session: RadarSessionManager) {
             TextButton(onClick = { showRoomDialog = true }) {
                 Text("Sala")
             }
-            if (started) {
+            if (running) {
                 TextButton(onClick = {
+                    vm.stoppedByUser = true
                     session.stop()
-                    started = false
                 }) {
                     Text("Detener")
                 }
@@ -183,8 +203,32 @@ private fun RadarRoot(session: RadarSessionManager) {
             )
         }
 
-        if (connected) {
-            ChatPanel(
+        when {
+            !granted -> PermissionGate(
+                onRetry = { launcher.launch(required) },
+                onOpenSettings = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                        )
+                    }
+                }
+            )
+
+            !running -> Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Radar está detenido", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { startIfPossible() }) { Text("Iniciar Radar") }
+            }
+
+            connected -> ChatPanel(
                 messages = messages,
                 draft = draft,
                 onDraftChange = { draft = it },
@@ -193,18 +237,53 @@ private fun RadarRoot(session: RadarSessionManager) {
                     draft = ""
                 }
             )
-        } else {
-            PeerList(
+
+            else -> PeerList(
                 peers = peers,
                 scanning = scanning,
-                onConnect = { session.connect(it) }
+                bluetoothOn = bluetoothOn,
+                onConnect = { session.connect(it) },
+                onRetry = { startIfPossible() }
             )
         }
     }
 }
 
 @Composable
-private fun PeerList(peers: List<RadarPeer>, scanning: Boolean, onConnect: (String) -> Unit) {
+private fun PermissionGate(onRetry: () -> Unit, onOpenSettings: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "Radar necesita Bluetooth y notificaciones",
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "El escaneo BLE usa el radio del teléfono. No se envía nada a ningún servidor.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onRetry) { Text("Conceder permisos") }
+        TextButton(onClick = onOpenSettings) { Text("Abrir ajustes de la app") }
+    }
+}
+
+@Composable
+private fun PeerList(
+    peers: List<RadarPeer>,
+    scanning: Boolean,
+    bluetoothOn: Boolean,
+    onConnect: (String) -> Unit,
+    onRetry: () -> Unit
+) {
     if (peers.isEmpty()) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -212,7 +291,11 @@ private fun PeerList(peers: List<RadarPeer>, scanning: Boolean, onConnect: (Stri
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = if (scanning) "Nadie cerca todavía" else "Radar apagado",
+                text = when {
+                    !bluetoothOn -> "Activá Bluetooth para empezar"
+                    scanning -> "Nadie cerca todavía"
+                    else -> "Radar apagado"
+                },
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(6.dp))
@@ -220,8 +303,11 @@ private fun PeerList(peers: List<RadarPeer>, scanning: Boolean, onConnect: (Stri
                 text = "Cada dispositivo conectado reenvía los mensajes: la red crece con la gente.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 24.dp)
+                modifier = Modifier.padding(horizontal = 24.dp),
+                textAlign = TextAlign.Center
             )
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onRetry) { Text("Reintentar") }
         }
         return
     }
@@ -272,8 +358,7 @@ private fun ChatPanel(
     Column(modifier = Modifier.fillMaxSize()) {
         if (messages.isEmpty()) {
             Text(
-                text = "Sesión abierta. Los mensajes se reenvían entre dispositivos; " +
-                    "al caer el último vínculo, el chat desaparece.",
+                text = "Sesión cifrada. Al caer el último vínculo, el chat desaparece.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 16.dp)
@@ -296,12 +381,22 @@ private fun ChatPanel(
                     Card {
                         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Text(text = message.text, fontSize = 14.sp)
-                            if (!message.isMine && message.hops > 0) {
-                                Text(
-                                    text = "${message.hops} salto(s)",
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (message.hops > 0) {
+                                    Text(
+                                        text = "${message.hops} salto(s)",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (message.isMine) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = if (message.delivered) "✓ entregado" else "○ enviado",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -341,8 +436,20 @@ private fun RoomDialog(
     onNewRoom: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var code by remember { mutableStateOf(current) }
     var error by remember { mutableStateOf<String?>(null) }
+    var copied by remember { mutableStateOf(false) }
+
+    val qr = remember(current) { qrBitmap(current) }
+
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (!contents.isNullOrBlank()) {
+            code = contents
+            error = null
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -350,11 +457,21 @@ private fun RoomDialog(
         text = {
             Column {
                 Text(
-                    "Todos los dispositivos deben usar el mismo código. " +
-                        "La clave nunca viaja por la red: sin el código, " +
-                        "los relays solo ven datos cifrados.",
+                    "Compartí este código con el grupo. La clave nunca viaja por la red.",
                     fontSize = 13.sp
                 )
+
+                qr?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "Código QR de la sala",
+                        modifier = Modifier
+                            .size(180.dp)
+                            .align(Alignment.CenterHorizontally)
+                    )
+                }
+
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = code,
@@ -366,6 +483,40 @@ private fun RoomDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("Sala Radar", current))
+                        copied = true
+                    }) {
+                        Text(if (copied) "Copiado" else "Copiar")
+                    }
+                    TextButton(onClick = {
+                        val share = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "Unite a mi sala Radar: $current")
+                        }
+                        runCatching {
+                            context.startActivity(Intent.createChooser(share, "Compartir sala"))
+                        }
+                    }) {
+                        Text("Compartir")
+                    }
+                    TextButton(onClick = {
+                        scanner.launch(
+                            ScanOptions()
+                                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                .setPrompt("Escaneá el QR de la sala")
+                                .setBeepEnabled(false)
+                                .setOrientationLocked(true)
+                        )
+                    }) {
+                        Text("Escanear")
+                    }
+                }
+
                 error?.let {
                     Spacer(Modifier.height(6.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -382,11 +533,23 @@ private fun RoomDialog(
         dismissButton = {
             Row {
                 TextButton(onClick = onNewRoom) { Text("Sala nueva") }
-                TextButton(onClick = onDismiss) { Text("Cancelar") }
+                TextButton(onClick = onDismiss) { Text("Cerrar") }
             }
         }
     )
 }
+
+private fun qrBitmap(text: String, size: Int = 512): Bitmap? = runCatching {
+    val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
+    val pixels = IntArray(size * size)
+    for (y in 0 until size) {
+        val row = y * size
+        for (x in 0 until size) {
+            pixels[row + x] = if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        }
+    }
+    Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
+}.getOrNull()
 
 private fun requiredPermissions(): Array<String> = buildList {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

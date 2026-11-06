@@ -1,6 +1,7 @@
 package com.radar.session
 
 import android.content.Context
+import com.radar.RadarForegroundService
 import com.radar.ble.ControlOpcode
 import com.radar.ble.Fragmenter
 import com.radar.ble.MessageAssembler
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.nio.ByteBuffer
+import java.util.ArrayDeque
 import kotlin.random.Random
 
 /** Estado observable de la malla local. */
@@ -25,16 +28,18 @@ data class MeshStats(
     val maxHop: Int = 0,
     val pending: Int = 0,
     /** Paquetes reenviados que no pudimos descifrar (otra sala o manipulación). */
-    val undecryptable: Int = 0
+    val undecryptable: Int = 0,
+    /** ACKs recibidos de mensajes propios. */
+    val acked: Int = 0,
+    /** Conexiones esperando un slot libre. */
+    val queued: Int = 0
 )
 
 /**
- * Orquesta la malla: mantiene vínculos BLE simultáneos, enruta paquetes y
- * decide cuándo entregar y cuándo reenviar.
+ * Orquesta la malla: vínculos BLE simultáneos, cifrado, ACKs y reenvío.
  *
  * Cada dispositivo puede ser Central (cliente GATT) de hasta [MAX_OUTGOING]
- * peers y Peripheral (servidor GATT) de varios más. El rol no es excluyente:
- * la malla se forma con vínculos punto a punto y el reenvío los encadena.
+ * peers y Peripheral (servidor GATT) de varios más. El rol no es excluyente.
  */
 class RadarSessionManager(context: Context) {
 
@@ -46,10 +51,17 @@ class RadarSessionManager(context: Context) {
     private val _stats = MutableStateFlow(MeshStats())
     val stats: StateFlow<MeshStats> = _stats.asStateFlow()
 
+    /** Radar encendido y con el servicio en primer plano activo. */
+    private val _running = MutableStateFlow(false)
+    val running: StateFlow<Boolean> = _running.asStateFlow()
+
     private val crypto = MeshCrypto()
 
     private val _roomCode = MutableStateFlow(crypto.startNewRoom())
     val roomCode: StateFlow<String> = _roomCode.asStateFlow()
+
+    private val _alias = MutableStateFlow("Radar")
+    val alias: StateFlow<String> = _alias.asStateFlow()
 
     /** Identidad efímera del proceso: no se persiste (Zero-Storage). */
     private val selfId: Int = Random.nextInt(1, Int.MAX_VALUE)
@@ -64,42 +76,52 @@ class RadarSessionManager(context: Context) {
     /** Todos los peers con vínculo activo, en cualquier dirección. */
     private val peers = mutableSetOf<String>()
 
+    /** Direcciones descubiertas esperando que se libere un slot. */
+    private val waiting = ArrayDeque<String>()
+
     /** Un ensamblador por link: los fragmentos de distintos peers no se mezclan. */
     private val assemblers = mutableMapOf<String, MessageAssembler>()
-
-    var alias: String = "Radar"
-        set(value) {
-            field = value.ifBlank { "Radar" }.take(31)
-        }
 
     // ------------------------------------------------------------------ ciclo
 
     fun start() {
+        _running.value = true
         ensureServer()
+        RadarForegroundService.start(appContext)
         ble.startAdvertising()
         ble.startScanning()
         updateStats()
     }
 
     fun stop() {
+        _running.value = false
         clients.values.forEach { runCatching { it.close() } }
         clients.clear()
+        waiting.clear()
         runCatching { server?.close() }
         server = null
         peers.clear()
         assemblers.clear()
         chat.purgeSession()
-        ble.stopAll()
+        ble.close()
+        RadarForegroundService.stop(appContext)
         updateStats()
     }
 
     // --------------------------------------------------------------- vínculos
 
     fun connect(address: String) {
-        if (address in clients) return
-        if (address in peers) return
-        if (clients.size >= MAX_OUTGOING) return
+        if (address in clients || address in peers) return
 
+        if (clients.size >= MAX_OUTGOING) {
+            if (address !in waiting) waiting.addLast(address)
+            updateStats()
+            return
+        }
+        openClient(address)
+    }
+
+    private fun openClient(address: String) {
         val gattClient = RadarGattClient(
             context = appContext,
             onReady = {
@@ -130,8 +152,19 @@ class RadarSessionManager(context: Context) {
         clients.remove(address)?.let { runCatching { it.close() } }
         peers.remove(address)
         assemblers.remove(address)
+        waiting.remove(address)
+
         if (peers.isEmpty()) {
             chat.purgeSession()
+        }
+
+        // Si había gente esperando slot, entra la siguiente.
+        while (clients.size < MAX_OUTGOING && waiting.isNotEmpty()) {
+            val next = waiting.removeFirst()
+            if (next !in clients && next !in peers) {
+                openClient(next)
+                break
+            }
         }
         updateStats()
     }
@@ -140,14 +173,12 @@ class RadarSessionManager(context: Context) {
 
     fun send(text: String) {
         val trimmed = text.trim().take(MAX_PLAINTEXT_CHARS)
-        if (trimmed.isEmpty()) return
-        if (peers.isEmpty()) return
+        if (trimmed.isEmpty() || peers.isEmpty()) return
 
-        val plaintext = trimmed.toByteArray(Charsets.UTF_8)
-        val payload = crypto.encrypt(plaintext) ?: return
-
+        val payload = crypto.encrypt(trimmed.toByteArray(Charsets.UTF_8)) ?: return
         val packet = router.origin(payload)
-        chat.append(trimmed, isMine = true, hops = 0)
+
+        chat.append(packet.messageId, trimmed, isMine = true, hops = 0)
         broadcast(packet.encode(), exclude = null)
         updateStats()
     }
@@ -168,6 +199,10 @@ class RadarSessionManager(context: Context) {
         chat.purgeSession()
     }
 
+    fun setAlias(value: String) {
+        _alias.value = value.ifBlank { "Radar" }.take(31)
+    }
+
     private fun onFrame(address: String, frame: ByteArray) {
         val assembler = assemblers.getOrPut(address) { MessageAssembler() }
         val raw = assembler.accept(frame) ?: return
@@ -178,22 +213,9 @@ class RadarSessionManager(context: Context) {
 
             is MeshRouter.Decision.Relay -> {
                 if (decision.deliver) {
-                    val decrypted = crypto.decrypt(packet.payload)
-                    if (decrypted != null) {
-                        chat.append(
-                            String(decrypted, Charsets.UTF_8),
-                            isMine = false,
-                            hops = packet.hopCount
-                        )
-                        _stats.update {
-                            it.copy(
-                                delivered = it.delivered + 1,
-                                maxHop = maxOf(it.maxHop, packet.hopCount)
-                            )
-                        }
-                    } else {
-                        // De otra sala o manipulado: se reenvía, no se muestra.
-                        _stats.update { it.copy(undecryptable = it.undecryptable + 1) }
+                    when (packet.type) {
+                        MeshPacket.TYPE_TEXT -> onText(address, packet)
+                        MeshPacket.TYPE_ACK -> onAck(packet)
                     }
                 }
 
@@ -205,6 +227,38 @@ class RadarSessionManager(context: Context) {
         }
 
         updateStats()
+    }
+
+    private fun onText(address: String, packet: MeshPacket) {
+        val decrypted = crypto.decrypt(packet.payload)
+        if (decrypted == null) {
+            _stats.update { it.copy(undecryptable = it.undecryptable + 1) }
+            return
+        }
+
+        chat.append(
+            packet.messageId,
+            String(decrypted, Charsets.UTF_8),
+            isMine = false,
+            hops = packet.hopCount
+        )
+        _stats.update {
+            it.copy(
+                delivered = it.delivered + 1,
+                maxHop = maxOf(it.maxHop, packet.hopCount)
+            )
+        }
+
+        // Confirmar al vecino del que vino; los relays lo propagan de vuelta.
+        val ack = router.originAck(packet.messageId)
+        sendFrames(address, Fragmenter.fragment(ack.encode()))
+    }
+
+    private fun onAck(packet: MeshPacket) {
+        if (packet.payload.size < 8) return
+        val acked = ByteBuffer.wrap(packet.payload).long
+        chat.markDelivered(acked)
+        _stats.update { it.copy(acked = it.acked + 1) }
     }
 
     // ------------------------------------------------------------ transporte
@@ -239,7 +293,11 @@ class RadarSessionManager(context: Context) {
 
     private fun updateStats() {
         _stats.update {
-            it.copy(links = peers.size, pending = router.pendingCount())
+            it.copy(
+                links = peers.size,
+                pending = router.pendingCount(),
+                queued = waiting.size
+            )
         }
     }
 
@@ -281,7 +339,7 @@ class RadarSessionManager(context: Context) {
 
     /** [len][alias UTF-8][avatarId] */
     private fun profilePayload(): ByteArray {
-        val name = alias.toByteArray(Charsets.UTF_8).take(31).toByteArray()
+        val name = _alias.value.toByteArray(Charsets.UTF_8).take(31).toByteArray()
         return byteArrayOf(name.size.toByte()) + name + byteArrayOf(AVATAR_ID)
     }
 

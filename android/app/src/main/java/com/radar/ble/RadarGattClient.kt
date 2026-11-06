@@ -9,15 +9,18 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.util.ArrayDeque
 
 /**
  * Lado Central: se conecta a un peer, lee su perfil, habilita notificaciones
- * y envía mensajes fragmentados.
+ * y envía paquetes fragmentados.
  *
- * Las escrituras se encolan: el stack BLE no soporta dos operaciones GATT
- * concurrentes sobre el mismo vínculo.
+ * Reintenta una vez si el primer intento falla (el error 133 es habitual tras
+ * un scan agresivo). Las escrituras se encolan porque el stack no soporta dos
+ * operaciones GATT concurrentes sobre el mismo vínculo.
  */
 class RadarGattClient(
     private val context: Context,
@@ -31,21 +34,41 @@ class RadarGattClient(
     private val manager =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 
+    private val handler = Handler(Looper.getMainLooper())
+
     private var gatt: BluetoothGatt? = null
     private var messageChar: BluetoothGattCharacteristic? = null
     private var controlChar: BluetoothGattCharacteristic? = null
+
+    private var target: String? = null
+    private var attempts = 0
+    private var closedByUser = false
 
     private val queue = ArrayDeque<Pair<BluetoothGattCharacteristic, ByteArray>>()
     private var writing = false
 
     @SuppressLint("MissingPermission")
     fun connect(address: String) {
+        target = address
+        closedByUser = false
+        attempts = 0
+        connectInternal(address)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectInternal(address: String) {
         val device = manager?.adapter?.getRemoteDevice(address) ?: run {
             Log.e(TAG, "Dirección inválida: $address")
             onDisconnected()
             return
         }
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        val newGatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        if (newGatt == null) {
+            Log.e(TAG, "connectGatt devolvió null")
+            giveUp()
+            return
+        }
+        gatt = newGatt
     }
 
     /** Encola un mensaje completo ya fragmentado. */
@@ -63,6 +86,8 @@ class RadarGattClient(
 
     @SuppressLint("MissingPermission")
     fun close() {
+        closedByUser = true
+        handler.removeCallbacksAndMessages(null)
         queue.clear()
         writing = false
         runCatching { gatt?.disconnect() }
@@ -70,6 +95,39 @@ class RadarGattClient(
         gatt = null
         messageChar = null
         controlChar = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun giveUp() {
+        runCatching { gatt?.close() }
+        gatt = null
+        messageChar = null
+        controlChar = null
+        queue.clear()
+        writing = false
+        onDisconnected()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun retryOrGiveUp() {
+        runCatching { gatt?.close() }
+        gatt = null
+        messageChar = null
+        controlChar = null
+        writing = false
+
+        val address = target
+        if (!closedByUser && address != null && attempts < MAX_ATTEMPTS) {
+            attempts++
+            val delay = RETRY_BASE_DELAY_MS * attempts
+            Log.w(TAG, "Reintentando conexión con $address en ${delay}ms (intento $attempts)")
+            handler.postDelayed({
+                if (!closedByUser) connectInternal(address)
+            }, delay)
+        } else {
+            queue.clear()
+            onDisconnected()
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -94,21 +152,22 @@ class RadarGattClient(
 
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "Estado de conexión con error: status=$status newState=$newState")
+            }
+
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    gatt = g
-                    g.discoverServices()
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        gatt = g
+                        attempts = 0
+                        g.discoverServices()
+                    } else {
+                        retryOrGiveUp()
+                    }
                 }
 
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    runCatching { g.close() }
-                    gatt = null
-                    messageChar = null
-                    controlChar = null
-                    queue.clear()
-                    writing = false
-                    onDisconnected()
-                }
+                BluetoothProfile.STATE_DISCONNECTED -> retryOrGiveUp()
             }
         }
 
@@ -116,19 +175,18 @@ class RadarGattClient(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "discoverServices falló: $status")
-                onDisconnected()
+                retryOrGiveUp()
                 return
             }
+
             val service = g.getService(RadarUuids.SERVICE) ?: run {
                 Log.e(TAG, "El peer no expone el servicio Radar")
-                onDisconnected()
+                giveUp()
                 return
             }
 
             controlChar = service.getCharacteristic(RadarUuids.CONTROL_CHAR)
             messageChar = service.getCharacteristic(RadarUuids.MESSAGE_CHAR)
-
-            g.requestMtu(MTU_REQUESTED)
 
             val profile = service.getCharacteristic(RadarUuids.PROFILE_CHAR)
             if (profile != null) g.readCharacteristic(profile)
@@ -136,7 +194,7 @@ class RadarGattClient(
             val message = messageChar
             if (message == null) {
                 Log.e(TAG, "Falta el characteristic de mensajes")
-                onDisconnected()
+                giveUp()
                 return
             }
 
@@ -159,6 +217,12 @@ class RadarGattClient(
         ) {
             if (descriptor.uuid == RadarUuids.CCCD && status == BluetoothGatt.GATT_SUCCESS) {
                 onReady()
+            }
+        }
+
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d(TAG, "MTU negociado: $mtu")
             }
         }
 
@@ -202,6 +266,7 @@ class RadarGattClient(
 
     private companion object {
         const val TAG = "RadarGattClient"
-        const val MTU_REQUESTED = 517
+        const val MAX_ATTEMPTS = 1
+        const val RETRY_BASE_DELAY_MS = 600L
     }
 }
