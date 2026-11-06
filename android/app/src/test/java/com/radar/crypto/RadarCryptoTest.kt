@@ -72,7 +72,7 @@ class RadarCryptoTest {
 
     @Test
     fun `normaliza minusculas separadores y confusiones`() {
-        assertEquals("ABCDE12345", RadarCrypto.normalize("abcde 1l2o45"))
+        assertEquals("ABCDE112045", RadarCrypto.normalize("abcde 1l2o45"))
         assertEquals("ABCDE12345", RadarCrypto.normalize("ABCDE-12345"))
         assertEquals("VWXYZ", RadarCrypto.normalize("uwxyz"))
     }
