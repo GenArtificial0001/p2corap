@@ -3,36 +3,53 @@ package com.radar.ble
 /**
  * Framing de paquetes sobre el characteristic Message Tx/Rx.
  *
- * Cada fragmento: [seq:1][total:1][flags:1][payload:<=17]
- * El receptor reensambla solo cuando están todos los fragmentos; si falta
- * alguno, el mensaje se descarta por timeout. La confirmación de entrega es
- * de aplicación (MeshPacket.TYPE_ACK), no por fragmento.
+ * Cada fragmento: [seq:1][total:1][flags:1][payload:<=N]
+ *
+ * `N` depende del MTU negociado en cada vínculo: con el MTU mínimo (23) son 17 bytes
+ * ([MIN_PAYLOAD]); con 247 son 241. El receptor **no necesita conocer N**: concatena los
+ * fragmentos por `seq`, así que cada vínculo puede usar su propio tamaño.
+ *
+ * El receptor reensambla solo cuando están todos los fragmentos; si falta alguno, el
+ * mensaje se descarta por timeout. La confirmación de entrega es de aplicación
+ * (MeshPacket.TYPE_ACK), no por fragmento.
  *
  * El framing transporta bytes opacos: el contenido real es un MeshPacket.
  */
 object Fragmenter {
 
     const val HEADER_SIZE = 3
-    const val MAX_FRAGMENT_PAYLOAD = RadarUuids.MIN_FRAGMENT_PAYLOAD
+
+    /** Payload por fragmento con MTU 23 (la garantía mínima de BLE). */
+    const val MIN_PAYLOAD = RadarUuids.MIN_FRAGMENT_PAYLOAD
+
+    /** Alias histórico de [MIN_PAYLOAD]. */
+    const val MAX_FRAGMENT_PAYLOAD = MIN_PAYLOAD
+
     const val FLAG_LAST: Byte = 0x01
+
+    /** `total` cabe en un byte. */
+    const val MAX_FRAGMENTS = 255
+
+    /** Payload de fragmento que corresponde a un MTU ATT: MTU - 3 (ATT) - 3 (cabecera). */
+    fun payloadForMtu(mtu: Int): Int = (mtu - 3 - HEADER_SIZE).coerceIn(MIN_PAYLOAD, 509)
 
     fun fragment(text: String): List<ByteArray> = fragment(text.toByteArray(Charsets.UTF_8))
 
-    fun fragment(bytes: ByteArray): List<ByteArray> {
+    fun fragment(bytes: ByteArray, payloadSize: Int = MIN_PAYLOAD): List<ByteArray> {
         require(bytes.isNotEmpty()) { "No se envía un paquete vacío" }
-        val total = (bytes.size + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD
-        require(total <= 255) { "Paquete demasiado grande: ${bytes.size} bytes" }
+        require(payloadSize >= 1) { "Tamaño de fragmento inválido: $payloadSize" }
+        val total = (bytes.size + payloadSize - 1) / payloadSize
+        require(total <= MAX_FRAGMENTS) { "Paquete demasiado grande: ${bytes.size} bytes" }
 
         return (0 until total).map { index ->
-            val from = index * MAX_FRAGMENT_PAYLOAD
-            val to = minOf(from + MAX_FRAGMENT_PAYLOAD, bytes.size)
-            val chunk = bytes.copyOfRange(from, to)
+            val from = index * payloadSize
+            val to = minOf(from + payloadSize, bytes.size)
             val flags: Byte = if (index == total - 1) FLAG_LAST else 0
-            ByteArray(HEADER_SIZE + chunk.size).apply {
+            ByteArray(HEADER_SIZE + (to - from)).apply {
                 this[0] = index.toByte()
                 this[1] = total.toByte()
                 this[2] = flags
-                chunk.copyInto(this, HEADER_SIZE)
+                bytes.copyInto(this, HEADER_SIZE, from, to)
             }
         }
     }
@@ -45,17 +62,19 @@ object Fragmenter {
  * o un hueco no pueden producir un mensaje truncado que luego se descifre a
  * medias. GATT entrega en orden por vínculo, así que `seq == 0` inicia un
  * mensaje nuevo.
+ *
+ * No asume un tamaño de fragmento fijo: guarda cada trozo por su `seq` y los une al
+ * final, por lo que acepta cualquier MTU.
  */
 class MessageAssembler {
 
-    private var buffer: ByteArray? = null
-    private var seen: BooleanArray? = null
+    private var parts: Array<ByteArray?>? = null
     private var expected: Int = -1
     private var received: Int = 0
-    private var lastChunkSize: Int = 0
+    private var bytes: Int = 0
     private var lastUpdateMs: Long = 0L
 
-    /** Devuelve el paquete completo cuando llegó el último fragmento, o null. */
+    /** Devuelve el paquete completo cuando llegaron todos los fragmentos, o null. */
     fun accept(packet: ByteArray): ByteArray? {
         if (packet.size <= Fragmenter.HEADER_SIZE) return null
 
@@ -65,56 +84,55 @@ class MessageAssembler {
 
         val seq = packet[0].toInt() and 0xFF
         val total = packet[1].toInt() and 0xFF
-        val chunk = packet.copyOfRange(Fragmenter.HEADER_SIZE, packet.size)
+        if (total <= 0 || seq >= total) return null
 
-        if (total <= 0 || seq >= total || chunk.isEmpty()) return null
-
-        if (buffer == null || expected != total || seq == 0) {
-            buffer = ByteArray(total * Fragmenter.MAX_FRAGMENT_PAYLOAD)
-            seen = BooleanArray(total)
+        if (parts == null || expected != total || seq == 0) {
+            parts = arrayOfNulls(total)
             expected = total
             received = 0
-            lastChunkSize = 0
+            bytes = 0
         }
 
-        val target = buffer ?: return null
-        val flags = seen ?: return null
-        val offset = seq * Fragmenter.MAX_FRAGMENT_PAYLOAD
-        if (offset + chunk.size > target.size) {
-            reset()
-            return null
-        }
-
-        if (!flags[seq]) {
-            chunk.copyInto(target, offset)
-            flags[seq] = true
+        val slots = parts ?: return null
+        if (slots[seq] == null) {
+            val chunk = packet.copyOfRange(Fragmenter.HEADER_SIZE, packet.size)
+            slots[seq] = chunk
             received++
-            if (seq == total - 1) lastChunkSize = chunk.size
+            bytes += chunk.size
+            if (bytes > MAX_ASSEMBLED_BYTES) {
+                reset()
+                return null
+            }
         }
 
-        if (received < expected || lastChunkSize <= 0) return null
+        if (received < expected) return null
 
-        val length = (expected - 1) * Fragmenter.MAX_FRAGMENT_PAYLOAD + lastChunkSize
-        if (length <= 0 || length > target.size) {
-            reset()
-            return null
+        val out = ByteArray(bytes)
+        var offset = 0
+        for (slot in slots) {
+            val chunk = slot ?: run {
+                reset()
+                return null
+            }
+            chunk.copyInto(out, offset)
+            offset += chunk.size
         }
-
-        val out = target.copyOf(length)
         reset()
         return if (out.isEmpty()) null else out
     }
 
     fun reset() {
-        buffer = null
-        seen = null
+        parts = null
         expected = -1
         received = 0
-        lastChunkSize = 0
+        bytes = 0
         lastUpdateMs = 0L
     }
 
     private companion object {
         const val TIMEOUT_MS = 5_000L
+
+        /** 255 fragmentos × 509 B. Evita que un cliente hostil nos haga reservar de más. */
+        const val MAX_ASSEMBLED_BYTES = 255 * 509
     }
 }

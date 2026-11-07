@@ -35,14 +35,30 @@ y la app se adapta al ancho disponible.
 
 Detalle y lista de correcciones en [`docs/06-ui-y-correcciones.md`](docs/06-ui-y-correcciones.md).
 
+## Pensado para cuando no hay nada
+
+Radar se diseñó para funcionar **sin electricidad de red, sin internet y sin servidores**: la malla Bluetooth une
+teléfonos directamente, y el **Wi-Fi local** (mDNS + TCP) añade velocidad con un router *o con el hotspot de un
+teléfono*. Un relé de internet existe como extra opcional (`server/`), pero nada depende de él. Detalle en
+[`docs/07`](docs/07-medios-wifi-y-emergencia.md).
+
+## Mensajes
+
+Texto, **emojis**, **stickers** (id de 2 bytes), **fotos**, **notas de voz** (ADPCM) y **videos cortos** (H.264 240p),
+todo cifrado de extremo a extremo con la clave de la sala. Lo que llega de otras personas se muestra tapado hasta tocarlo.
+
 ## Estructura
 
 ```
+server/                     Relé WebSocket opcional (Python, sin dependencias) + tests + Dockerfile
 docs/                       Especificación, perfil GATT, revisión técnica y roadmap
 android/
   app/src/main/java/com/radar/
     ble/                    Advertising, scanning, GATT server y client
     mesh/                   Paquete de malla, dedup, TTL, store-and-forward
+    media/                  Protocolo de medios, reensamblado, ADPCM, compresión de foto/video, grabadora
+    lan/                    Wi-Fi local sin servidor (mDNS + TCP)
+    relay/                  Cliente WebSocket e invitaciones (internet opcional)
     crypto/                 Clave de sala, AES-256-GCM, código legible
     chat/                   Modelo de mensaje + repositorio volátil
     session/                Vínculos simultáneos, handshake y ruteo
@@ -124,6 +140,8 @@ El advertising y el scanning **no funcionan en emulador**: hace falta hardware r
 - [`docs/04-roadmap.md`](docs/04-roadmap.md) — fases
 - [`docs/05-mesh.md`](docs/05-mesh.md) — **malla multi-salto**: formato, TTL y límites
 - [`docs/06-ui-y-correcciones.md`](docs/06-ui-y-correcciones.md) — **rediseño de la interfaz** y correcciones de robustez
+- [`docs/07-medios-wifi-y-emergencia.md`](docs/07-medios-wifi-y-emergencia.md) — **fotos, audio, video, stickers, Wi-Fi local sin servidor y modo emergencia**
+- [`docs/08-tablon-perfiles-historias.md`](docs/08-tablon-perfiles-historias.md) — diseño (pendiente) de perfiles, publicaciones e historias offline
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — qué datos se guardan (ninguno) y qué ve la red
 
 ## Aviso

@@ -53,3 +53,18 @@ No hay `Room`, `SQLite`, `SharedPreferences`, `DataStore` ni `SavedStateHandle` 
 | `FOREGROUND_SERVICE` / `CONNECTED_DEVICE` | Mantener el advertising vivo en background. |
 
 No se usa ubicación para nada: el permiso existe únicamente porque el stack BLE de Android ≤ 11 lo exige. No se deriva ni se guarda posición.
+
+
+## Actualización: medios, Wi-Fi local e internet opcional
+
+* **Permisos nuevos:** `RECORD_AUDIO` (solo al tocar el micrófono), `INTERNET` y `ACCESS_NETWORK_STATE` (solo si activas el
+  relé), `ACCESS_WIFI_STATE` y `CHANGE_WIFI_MULTICAST_STATE` (Wi-Fi local). La cámara se usa solo al elegir «Cámara» o escanear un QR.
+* **Preferencias guardadas** (`SharedPreferences`, excluidas de backups): la dirección del relé y si activaste el Wi-Fi local.
+  No hay contenido de mensajes ni códigos de sala.
+* **Archivo temporal de video:** al comprimir un video, el transcodificador escribe un `.mp4` en la caché de la app; se lee a RAM y se
+  borra al terminar, fallar o cancelar.
+* **Wi-Fi local:** anuncia en tu red un servicio `_radar._tcp` cuyo nombre incluye un hash de la sala (no el código). Es opcional y
+  está apagado por defecto. Quien esté en tu red puede ver que ese servicio existe.
+* **Relé de internet (opcional):** ve tu IP, el hash de la sala y el tamaño/hora de los paquetes; **no** ve el código ni el contenido
+  (el código viaja en el fragmento `#` del enlace, que el navegador no envía).
+* **Medios recibidos:** viven en RAM con tope de 6 MB, se muestran tapados hasta tocarlos y se descartan al cerrarse el último vínculo.

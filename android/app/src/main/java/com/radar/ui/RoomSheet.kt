@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -67,6 +68,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.radar.crypto.RadarCrypto
+import com.radar.relay.RelayClient
 import kotlinx.coroutines.delay
 
 /** ¿Es la sala pública de fábrica (cualquiera con la app puede leerla)? */
@@ -89,6 +91,7 @@ internal fun roomLabel(code: String): String =
 @Composable
 fun RoomSheet(
     current: String,
+    internet: InternetUi,
     onJoin: (String) -> Boolean,
     onNewRoom: () -> Unit,
     onDismiss: () -> Unit
@@ -198,6 +201,10 @@ fun RoomSheet(
                     },
                     onJoin = { tryJoin(code) }
                 )
+
+                LanBlock(internet = internet)
+
+                InternetBlock(internet = internet, onDismiss = onDismiss)
 
                 NewRoomBlock(
                     confirming = confirmNew,
@@ -363,6 +370,193 @@ private fun JoinBlock(
             ) { Text("Unirme") }
         }
     }
+}
+
+@Composable
+private fun LanBlock(internet: InternetUi) {
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Wi-Fi local · sin servidor", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = when {
+                        !internet.lanEnabled -> "Apagado"
+                        internet.lanPeers > 0 -> "${internet.lanPeers} conectado(s) por la red"
+                        else -> "Buscando teléfonos en tu red…"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (internet.lanPeers > 0) RadarColors.Mint
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = internet.lanEnabled,
+                onCheckedChange = internet.onToggleLan
+            )
+        }
+        Text(
+            text = "No necesita internet ni servidor. Si se fue la luz: una persona activa el " +
+                "punto de acceso (hotspot) de su teléfono, los demás se conectan a esa Wi-Fi, " +
+                "y Radar los une solo. Redes de invitados con «aislamiento» lo impiden.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        FilledTonalButton(
+            onClick = { shareInvite(context, internet.roomLink) },
+            modifier = Modifier.heightIn(min = 48.dp)
+        ) {
+            Icon(Icons.Filled.Share, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Compartir enlace de la sala", maxLines = 1)
+        }
+    }
+}
+
+/** Estado y acciones del enlace por internet (relé), para no acoplar la hoja a la sesión. */
+class InternetUi(
+    /** Wi-Fi local (sin servidor): activo, cuántos conectados y enlace de la sala. */
+    val lanEnabled: Boolean,
+    val lanPeers: Int,
+    val roomLink: String,
+    val onToggleLan: (Boolean) -> Unit,
+    val relayUrl: String?,
+    val state: RelayClient.State,
+    val members: Int,
+    val inviteLink: String?,
+    /** Acepta una dirección `wss://…` o un enlace de invitación. Devuelve true si fue válido. */
+    val onConnect: (String) -> Boolean,
+    val onDisable: () -> Unit
+)
+
+@Composable
+private fun InternetBlock(internet: InternetUi, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var input by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var copied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2_000)
+            copied = false
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        Text("Internet (opcional)", style = MaterialTheme.typography.titleMedium)
+
+        if (internet.relayUrl == null) {
+            Text(
+                text = "Solo si hay internet y quieres hablar con alguien lejos. Necesita un relé " +
+                    "(un servidor que únicamente reenvía datos cifrados). Pega su dirección " +
+                    "wss://… o un enlace de invitación. Sin internet, usa Bluetooth o Wi-Fi local.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = Alignment.Top) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = {
+                        input = it
+                        error = null
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("wss://… o enlace de invitación") },
+                    singleLine = true,
+                    isError = error != null,
+                    supportingText = error?.let { { Text(it) } },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                )
+                Spacer(Modifier.size(Space.sm))
+                Button(
+                    onClick = {
+                        if (internet.onConnect(input.trim())) {
+                            input = ""
+                            onDismiss()
+                        } else {
+                            error = "Debe empezar con wss:// (no se permite texto plano)"
+                        }
+                    },
+                    enabled = input.isNotBlank(),
+                    modifier = Modifier.padding(top = 8.dp).heightIn(min = 48.dp)
+                ) { Text("Activar") }
+            }
+        } else {
+            val (label, tone) = when (internet.state) {
+                RelayClient.State.CONNECTED ->
+                    if (internet.members >= 2) {
+                        "Conectado · ${internet.members} en la sala" to RadarColors.Mint
+                    } else {
+                        "Conectado · esperando a alguien más" to RadarColors.Cyan
+                    }
+
+                RelayClient.State.CONNECTING -> "Conectando…" to RadarColors.Cyan
+                RelayClient.State.RETRYING -> "Reintentando…" to RadarColors.Amber
+                RelayClient.State.OFF -> "Apagado" to MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            StatusPill(text = label, color = tone, pulsing = internet.state != RelayClient.State.OFF)
+            Text(
+                text = internet.relayUrl,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            internet.inviteLink?.let { link ->
+                Text(
+                    text = "Enlace de invitación (el código va tras el #: el servidor no lo recibe)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = link,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    FilledTonalButton(
+                        onClick = {
+                            copyRoom(context, link)
+                            copied = true
+                        },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) { Text(if (copied) "Copiado" else "Copiar enlace", maxLines = 1) }
+                    FilledTonalButton(
+                        onClick = { shareInvite(context, link) },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Filled.Share, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text("Compartir", maxLines = 1)
+                    }
+                }
+            }
+            if (isPublicRoom(internet.inviteLink?.substringAfter('#') ?: "")) {
+                Text(
+                    text = "Estás en la sala pública: crea una sala privada antes de invitar a alguien.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = RadarColors.Amber
+                )
+            }
+            OutlinedButton(
+                onClick = internet.onDisable,
+                modifier = Modifier.heightIn(min = 48.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) { Text("Desactivar internet") }
+        }
+    }
+}
+
+private fun shareInvite(context: Context, link: String) {
+    val share = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, "Hablemos por Radar (cifrado, sin cuentas): $link")
+    }
+    runCatching { context.startActivity(Intent.createChooser(share, "Compartir invitación")) }
 }
 
 @Composable

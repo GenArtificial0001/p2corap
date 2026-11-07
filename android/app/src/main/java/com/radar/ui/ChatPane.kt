@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,19 +19,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,23 +34,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.radar.chat.Message
-import com.radar.chat.TextLimit
+import com.radar.chat.MessageKind
+import com.radar.media.VoiceRecorder
 import java.text.DateFormat
 import java.util.Date
 
 private val MineShape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
 private val TheirsShape = RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp)
-
-/** Aparece el contador de bytes cuando se llega a este porcentaje del límite. */
-private const val COUNTER_THRESHOLD = 0.75f
 
 /**
  * Pestaña «Chat»: encabezado de cifrado, mensajes y compositor.
@@ -69,9 +60,12 @@ fun ChatPane(
     links: Int,
     peerAlias: String?,
     roomLabel: String,
+    internetLabel: String?,
     draft: String,
+    recorder: VoiceRecorder,
+    composer: ComposerActions,
+    media: MediaActions,
     onDraftChange: (String) -> Unit,
-    onSend: () -> Unit,
     onGoToRadar: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -88,7 +82,12 @@ fun ChatPane(
                 .widthIn(max = 760.dp)
                 .fillMaxSize()
         ) {
-            ChatHeader(links = links, peerAlias = peerAlias, roomLabel = roomLabel)
+            ChatHeader(
+                links = links,
+                peerAlias = peerAlias,
+                roomLabel = roomLabel,
+                internetLabel = internetLabel
+            )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 if (messages.isEmpty()) {
@@ -97,14 +96,11 @@ fun ChatPane(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                            horizontal = Space.md,
-                            vertical = Space.sm
-                        ),
+                        contentPadding = PaddingValues(horizontal = Space.md, vertical = Space.sm),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(messages, key = { it.id }) { message ->
-                            Bubble(message)
+                            MessageRow(message, media)
                         }
                     }
                 }
@@ -113,15 +109,16 @@ fun ChatPane(
             Composer(
                 draft = draft,
                 enabled = linked,
-                onDraftChange = onDraftChange,
-                onSend = onSend
+                recorder = recorder,
+                actions = composer,
+                onDraftChange = onDraftChange
             )
         }
     }
 }
 
 @Composable
-private fun ChatHeader(links: Int, peerAlias: String?, roomLabel: String) {
+private fun ChatHeader(links: Int, peerAlias: String?, roomLabel: String, internetLabel: String?) {
     val who = when {
         links <= 0 -> "Sin vínculos"
         !peerAlias.isNullOrBlank() && links == 1 -> peerAlias
@@ -154,7 +151,7 @@ private fun ChatHeader(links: Int, peerAlias: String?, roomLabel: String) {
                     maxLines = 1
                 )
                 Text(
-                    text = "Cifrado AES-256 · $roomLabel",
+                    text = "Cifrado AES-256 · $roomLabel" + (internetLabel?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
@@ -196,9 +193,10 @@ private fun EmptyChat(linked: Boolean, onGoToRadar: () -> Unit) {
         Spacer(Modifier.height(Space.xs))
         Text(
             text = if (linked) {
-                "Escribí el primer mensaje. Es cifrado, efímero y desaparece al cerrarse el último vínculo."
+                "Escribe, manda un sticker, una foto o una nota de voz. Todo es cifrado y efímero: " +
+                    "desaparece al cerrarse el último vínculo."
             } else {
-                "Conectate a un dispositivo desde el radar para empezar a chatear."
+                "Conéctate a un dispositivo desde el radar, o invita a alguien por internet con un enlace."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -211,14 +209,17 @@ private fun EmptyChat(linked: Boolean, onGoToRadar: () -> Unit) {
     }
 }
 
+// ------------------------------------------------------------------- mensajes
+
 @Composable
-private fun Bubble(message: Message) {
+private fun MessageRow(message: Message, media: MediaActions) {
     val mine = message.isMine
     val time = remember(message.timestamp) {
         DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.timestamp))
     }
     val status = when {
         !mine -> ""
+        message.inTransfer -> "Enviando"
         message.delivered -> "Entregado"
         else -> "Enviado"
     }
@@ -227,9 +228,16 @@ private fun Bubble(message: Message) {
         1 -> "vía 1 salto"
         else -> "vía ${message.hops} saltos"
     }
+    val kindLabel = when (message.kind) {
+        MessageKind.TEXT -> message.text
+        MessageKind.STICKER -> "sticker"
+        MessageKind.IMAGE -> "foto"
+        MessageKind.AUDIO -> "nota de voz"
+        MessageKind.VIDEO -> "video"
+    }
     val spoken = buildString {
         append(if (mine) "Tú" else "Recibido")
-        append(": ").append(message.text).append(". ").append(time)
+        append(": ").append(kindLabel).append(". ").append(time)
         hops?.let { append(", ").append(it) }
         if (status.isNotEmpty()) append(", ").append(status)
     }
@@ -237,127 +245,91 @@ private fun Bubble(message: Message) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = if (mine) 48.dp else 0.dp, end = if (mine) 0.dp else 48.dp),
+            .padding(start = if (mine) 40.dp else 0.dp, end = if (mine) 0.dp else 40.dp),
         contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        val bubbleModifier = if (mine) {
-            Modifier.clip(MineShape).background(RadarColors.MineBubble)
-        } else {
-            Modifier
-                .clip(TheirsShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        }
-        val ink = if (mine) RadarColors.OnCyan else MaterialTheme.colorScheme.onSurface
-        val soft = if (mine) RadarColors.OnCyan.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant
-
-        Column(
-            modifier = bubbleModifier
-                .semantics(mergeDescendants = true) { contentDescription = spoken }
-                .padding(horizontal = 14.dp, vertical = 9.dp)
-        ) {
-            SelectionContainer {
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = ink
-                )
-            }
-            Row(
-                modifier = Modifier.padding(top = 3.dp).align(Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+        if (message.kind == MessageKind.STICKER) {
+            // El sticker se muestra sin burbuja, con la hora debajo.
+            Column(
+                horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+                modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = spoken }
             ) {
-                hops?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = soft)
-                }
-                Text(time, style = MaterialTheme.typography.labelSmall, color = soft)
-                if (mine) {
-                    Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = null,
-                        tint = if (message.delivered) RadarColors.OnCyan else soft,
-                        modifier = Modifier.size(14.dp)
+                StickerContent(message)
+                MetaRow(message, time, hops, status, MaterialTheme.colorScheme.onSurfaceVariant, Color.Unspecified)
+            }
+        } else {
+            val bubbleModifier = if (mine) {
+                Modifier.clip(MineShape).background(RadarColors.MineBubble)
+            } else {
+                Modifier.clip(TheirsShape).background(MaterialTheme.colorScheme.surfaceVariant)
+            }
+            val ink = if (mine) RadarColors.OnCyan else MaterialTheme.colorScheme.onSurface
+            val soft = if (mine) RadarColors.OnCyan.copy(alpha = 0.72f)
+            else MaterialTheme.colorScheme.onSurfaceVariant
+            val isVisual = message.kind == MessageKind.IMAGE || message.kind == MessageKind.VIDEO
+
+            Column(
+                modifier = bubbleModifier
+                    .semantics(mergeDescendants = true) { contentDescription = spoken }
+                    .padding(
+                        horizontal = if (isVisual) 4.dp else 14.dp,
+                        vertical = if (isVisual) 4.dp else 9.dp
                     )
-                    Text(
-                        status,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = soft
-                    )
+            ) {
+                when (message.kind) {
+                    MessageKind.TEXT -> SelectionContainer {
+                        Text(
+                            text = message.text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = ink
+                        )
+                    }
+
+                    MessageKind.IMAGE -> ImageContent(message, media)
+                    MessageKind.VIDEO -> VideoContent(message, media)
+                    MessageKind.AUDIO -> AudioContent(message, media, ink, soft)
+                    MessageKind.STICKER -> Unit
                 }
+                MetaRow(
+                    message, time, hops, status, soft,
+                    if (message.delivered) ink else Color.Unspecified,
+                    modifier = Modifier.padding(
+                        top = 3.dp,
+                        end = if (isVisual) 8.dp else 0.dp,
+                        bottom = if (isVisual) 2.dp else 0.dp
+                    )
+                )
             }
         }
     }
 }
 
+/** Hora, saltos y estado de entrega. */
 @Composable
-private fun Composer(
-    draft: String,
-    enabled: Boolean,
-    onDraftChange: (String) -> Unit,
-    onSend: () -> Unit
+private fun androidx.compose.foundation.layout.ColumnScope.MetaRow(
+    message: Message,
+    time: String,
+    hops: String?,
+    status: String,
+    soft: Color,
+    deliveredTint: Color,
+    modifier: Modifier = Modifier
 ) {
-    val haptics = LocalHapticFeedback.current
-    val bytes = TextLimit.byteLength(draft)
-    val showCounter = bytes >= (TextLimit.MAX_BYTES * COUNTER_THRESHOLD).toInt()
-    val canSend = enabled && draft.isNotBlank()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Space.md, vertical = Space.sm)
+    Row(
+        modifier = modifier.align(Alignment.End),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { onDraftChange(TextLimit.truncate(it)) },
-                modifier = Modifier.weight(1f),
-                enabled = enabled,
-                placeholder = {
-                    Text(if (enabled) "Mensaje efímero…" else "Conectate a un par para escribir")
-                },
-                shape = RoundedCornerShape(26.dp),
-                maxLines = 5,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                    disabledContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary
-                )
+        hops?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = soft) }
+        Text(time, style = MaterialTheme.typography.labelSmall, color = soft)
+        if (message.isMine) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = if (message.delivered && deliveredTint != Color.Unspecified) deliveredTint else soft,
+                modifier = Modifier.size(14.dp)
             )
-            Spacer(Modifier.size(Space.sm))
-            FilledIconButton(
-                onClick = {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onSend()
-                },
-                enabled = canSend,
-                modifier = Modifier.size(56.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Enviar mensaje"
-                )
-            }
-        }
-        if (showCounter) {
-            Text(
-                text = "$bytes / ${TextLimit.MAX_BYTES} bytes",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (bytes >= TextLimit.MAX_BYTES) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier.padding(start = Space.md, top = Space.xs)
-            )
+            Text(status, style = MaterialTheme.typography.labelSmall, color = soft)
         }
     }
 }

@@ -60,6 +60,17 @@ class RadarGattServer(
     private val failures = mutableMapOf<String, Int>()
     private val timeouts = mutableMapOf<String, Runnable>()
 
+    /** MTU ATT negociado por dispositivo (lo pide el cliente; 23 si no pidió ninguno). */
+    private val mtus = mutableMapOf<String, Int>()
+
+    /** Payload de fragmento que admite el vínculo con [address]. */
+    fun fragmentPayload(address: String): Int =
+        Fragmenter.payloadForMtu(mtus[address] ?: DEFAULT_MTU)
+
+    /** Fragmentos pendientes de notificar a [address] (contrapresión para el emisor de medios). */
+    fun queuedFrames(address: String): Int =
+        (outbox[address]?.size ?: 0) + if (address in inFlight) 1 else 0
+
     private val profileChar = BluetoothGattCharacteristic(
         RadarUuids.PROFILE_CHAR,
         BluetoothGattCharacteristic.PROPERTY_READ,
@@ -124,6 +135,7 @@ class RadarGattServer(
         outbox.clear()
         inFlight.clear()
         failures.clear()
+        mtus.clear()
     }
 
     /** Corta el vínculo con un dispositivo conectado a nuestro servidor. */
@@ -210,6 +222,7 @@ class RadarGattServer(
         outbox.remove(address)
         inFlight.remove(address)
         failures.remove(address)
+        mtus.remove(address)
         timeouts.remove(address)?.let { main.removeCallbacks(it) }
     }
 
@@ -234,6 +247,11 @@ class RadarGattServer(
                     }
                 }
             }
+        }
+
+        override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            val address = device.address ?: return
+            main.post { mtus[address] = mtu }
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
@@ -340,6 +358,7 @@ class RadarGattServer(
 
     private companion object {
         const val TAG = "RadarGattServer"
+        const val DEFAULT_MTU = 23
         const val RETRY_DELAY_MS = 40L
         const val NOTIFY_TIMEOUT_MS = 1_500L
         const val MAX_NOTIFY_FAILURES = 25

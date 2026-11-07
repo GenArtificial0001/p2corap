@@ -14,6 +14,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.Crossfade
@@ -46,6 +47,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.radar.chat.MessageKind
+import com.radar.relay.InviteLink
+import com.radar.relay.RelayClient
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -68,11 +73,24 @@ class MainActivity : ComponentActivity() {
             setRecentsScreenshotEnabled(false)
         }
 
+        // Invitación recibida al abrir la app desde un enlace (solo la primera vez, no al rotar).
+        if (savedInstanceState == null) handleIntent(intent)
+
         setContent {
             RadarTheme {
                 RadarRoot(viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) viewModel.handleInvite(intent.dataString)
     }
 }
 
@@ -98,6 +116,15 @@ private fun RadarRoot(vm: RadarViewModel) {
     val running by session.running.collectAsState()
     val connectingTo by session.connectingTo.collectAsState()
     val linkError by session.linkError.collectAsState()
+    val lanRunning by session.lanRunning.collectAsState()
+    val lanPeers by session.lanPeers.collectAsState()
+    val relayUrl by session.relayUrl.collectAsState()
+    val relayState by session.relayState.collectAsState()
+    val relayMembers by session.relayMembers.collectAsState()
+    val notice by vm.notice.collectAsState()
+    val busy by vm.busy.collectAsState()
+    val playingId by vm.player.playingId.collectAsState()
+    val positionMs by vm.player.positionMs.collectAsState()
 
     val required = remember { requiredPermissions() }
     var granted by remember {
@@ -110,6 +137,7 @@ private fun RadarRoot(vm: RadarViewModel) {
 
     var showRoom by remember { mutableStateOf(false) }
     var tab by rememberSaveable { mutableStateOf(TAB_NEARBY) }
+    var viewingId by remember { mutableStateOf<Long?>(null) }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -120,6 +148,34 @@ private fun RadarRoot(vm: RadarViewModel) {
             session.start()
         }
     }
+
+    // ---- selectores del sistema para adjuntar (no necesitan permisos de almacenamiento)
+
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) vm.sendPhoto(uri) }
+
+    val videoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) vm.sendVideo(uri) }
+
+    val cameraShot = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap -> if (bitmap != null) vm.sendBitmap(bitmap) }
+
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { ok -> if (ok) cameraShot.launch(null) }
+
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { ok ->
+        // El gesto original ya terminó: se pide tocar el micrófono otra vez.
+        if (ok) vm.postNotice("Permiso concedido. Toca el micrófono para grabar.")
+    }
+
+    fun has(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     fun startIfPossible() {
         if (!granted) {
@@ -138,10 +194,18 @@ private fun RadarRoot(vm: RadarViewModel) {
         }
     }
 
+    // Los avisos se cierran solos a los 5 s.
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(5_000)
+            vm.clearNotice()
+        }
+    }
+
     val links = stats.links
     val state = when {
         !granted -> LinkState.PERMISSIONS
-        !bluetoothOn -> LinkState.BLUETOOTH_OFF
+        !bluetoothOn && links == 0 -> LinkState.BLUETOOTH_OFF
         !running -> LinkState.PAUSED
         links > 0 -> LinkState.ACTIVE
         else -> LinkState.SEARCHING
@@ -157,6 +221,63 @@ private fun RadarRoot(vm: RadarViewModel) {
 
     val errorText = linkError ?: bleError
     val roomText = roomLabel(roomCode)
+
+    val internetUi = InternetUi(
+        lanEnabled = lanRunning,
+        lanPeers = lanPeers,
+        roomLink = session.roomLink(),
+        onToggleLan = vm::setLan,
+        relayUrl = relayUrl,
+        state = relayState,
+        members = relayMembers,
+        inviteLink = session.inviteLink(),
+        onConnect = { text ->
+            if (InviteLink.parse(text) != null) vm.handleInvite(text) else vm.enableInternet(text)
+        },
+        onDisable = vm::disableInternet
+    )
+    val internetLabel = when {
+        lanPeers > 0 -> "Wi-Fi local"
+        relayUrl != null && relayState == RelayClient.State.CONNECTED -> "Internet"
+        else -> null
+    }
+
+    val composerActions = ComposerActions(
+        onSend = {
+            session.send(vm.draft)
+            vm.draft = ""
+        },
+        onSticker = vm::sendSticker,
+        onPickPhoto = {
+            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        },
+        onPickVideo = {
+            videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+        },
+        onTakePhoto = {
+            if (has(Manifest.permission.CAMERA)) cameraShot.launch(null)
+            else cameraPermission.launch(Manifest.permission.CAMERA)
+        },
+        onStartRecording = {
+            if (has(Manifest.permission.RECORD_AUDIO)) {
+                vm.startRecording()
+            } else {
+                micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                false
+            }
+        },
+        onFinishRecording = vm::finishRecording
+    )
+
+    val mediaActions = MediaActions(
+        revealed = vm.revealed,
+        playingId = playingId,
+        positionMs = positionMs,
+        onReveal = vm::reveal,
+        onToggleAudio = vm::toggleAudio,
+        onOpen = { viewingId = it.id },
+        onCancel = session::cancelTransfer
+    )
 
     BoxWithConstraints(
         modifier = Modifier
@@ -214,6 +335,8 @@ private fun RadarRoot(vm: RadarViewModel) {
                     }
                 )
             }
+            busy?.let { BusyBanner(message = it, onCancel = vm::cancelBusy) }
+            notice?.let { NoticeBanner(message = it, onDismiss = vm::clearNotice) }
 
             // Sin barra inferior (modo ancho o teclado abierto) el contenido
             // debe respetar el borde inferior del sistema y el teclado.
@@ -266,12 +389,12 @@ private fun RadarRoot(vm: RadarViewModel) {
                                 links = if (connected) links else 0,
                                 peerAlias = peerAlias,
                                 roomLabel = roomText,
+                                internetLabel = internetLabel,
                                 draft = vm.draft,
+                                recorder = vm.recorder,
+                                composer = composerActions,
+                                media = mediaActions,
                                 onDraftChange = { vm.draft = it },
-                                onSend = {
-                                    session.send(vm.draft)
-                                    vm.draft = ""
-                                },
                                 onGoToRadar = { tab = TAB_NEARBY },
                                 modifier = m
                             )
@@ -314,10 +437,21 @@ private fun RadarRoot(vm: RadarViewModel) {
     if (showRoom) {
         RoomSheet(
             current = roomCode,
+            internet = internetUi,
             onJoin = { session.joinRoom(it) },
             onNewRoom = { session.newRoom() },
             onDismiss = { showRoom = false }
         )
+    }
+
+    // Visores a pantalla completa de lo que el usuario tocó.
+    val viewing = messages.firstOrNull { it.id == viewingId }
+    if (viewing != null) {
+        when (viewing.kind) {
+            MessageKind.IMAGE -> ImageViewer(viewing) { viewingId = null }
+            MessageKind.VIDEO -> VideoViewer(viewing) { viewingId = null }
+            else -> Unit
+        }
     }
 }
 

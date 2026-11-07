@@ -54,6 +54,21 @@ class RadarGattClient(
     /** Evita avisar `onReady` dos veces (lectura de perfil fallida + timeout, etc.). */
     private var readyFired = false
 
+    /** MTU ATT negociado (23 hasta que el peer acepte uno mayor). */
+    private var mtu = DEFAULT_MTU
+    private var discovering = false
+
+    /** Tamaño de payload de fragmento que este vínculo admite (17 con MTU 23). */
+    val fragmentPayload: Int get() = Fragmenter.payloadForMtu(mtu)
+
+    /** Fragmentos pendientes de escribir; el emisor de medios lo usa como contrapresión. */
+    fun queuedFrames(): Int = queue.size + if (writing) 1 else 0
+
+    /** Si el peer no contesta a la petición de MTU, se sigue con el MTU por defecto. */
+    private val mtuFallback = Runnable {
+        gatt?.let { startDiscovery(it) }
+    }
+
     private val queue = ArrayDeque<Pair<BluetoothGattCharacteristic, ByteArray>>()
     private var writing = false
     private var writeFailures = 0
@@ -78,6 +93,8 @@ class RadarGattClient(
         closedByUser = false
         attempts = 0
         readyFired = false
+        mtu = DEFAULT_MTU
+        discovering = false
         armConnectTimeout()
         connectInternal(address)
     }
@@ -163,6 +180,9 @@ class RadarGattClient(
         controlChar = null
         writing = false
         readyFired = false
+        mtu = DEFAULT_MTU
+        discovering = false
+        handler.removeCallbacks(mtuFallback)
 
         val address = target
         if (!closedByUser && address != null && attempts < MAX_ATTEMPTS) {
@@ -178,6 +198,30 @@ class RadarGattClient(
             queue.clear()
             onDisconnected()
         }
+    }
+
+    /**
+     * Pide un MTU mayor antes de descubrir servicios (el orden recomendado por Android).
+     * Con MTU 247 cada escritura lleva 241 B en vez de 17: es lo que hace viable enviar fotos.
+     */
+    @SuppressLint("MissingPermission")
+    private fun negotiateMtu(g: BluetoothGatt) {
+        // Intervalo de conexión corto = más escrituras por segundo. Cuesta algo de batería.
+        runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+        val asked = runCatching { g.requestMtu(REQUESTED_MTU) }.getOrDefault(false)
+        if (asked) {
+            handler.postDelayed(mtuFallback, MTU_TIMEOUT_MS)
+        } else {
+            startDiscovery(g)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startDiscovery(g: BluetoothGatt) {
+        if (discovering) return
+        discovering = true
+        handler.removeCallbacks(mtuFallback)
+        g.discoverServices()
     }
 
     /** Llama al listener de listo (una sola vez) y cancela el timeout de conexión. */
@@ -244,7 +288,7 @@ class RadarGattClient(
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             gatt = g
                             attempts = 0
-                            g.discoverServices()
+                            negotiateMtu(g)
                         } else {
                             retryOrGiveUp()
                         }
@@ -318,8 +362,12 @@ class RadarGattClient(
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "MTU negociado: $mtu")
+            handler.post {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    this@RadarGattClient.mtu = mtu
+                    Log.d(TAG, "MTU negociado: $mtu")
+                }
+                startDiscovery(g)
             }
         }
 
@@ -379,5 +427,10 @@ class RadarGattClient(
         const val WRITE_RETRY_DELAY_MS = 200L
         const val MAX_WRITE_FAILURES = 5
         const val CONNECT_TIMEOUT_MS = 10_000L
+        const val DEFAULT_MTU = 23
+
+        /** 247 es lo que casi todo el hardware con Data Length Extension concede. */
+        const val REQUESTED_MTU = 247
+        const val MTU_TIMEOUT_MS = 2_500L
     }
 }

@@ -313,3 +313,70 @@ fun PausedState(onStart: () -> Unit, modifier: Modifier = Modifier) {
 
 /** Color translúcido de fondo para el separador entre paneles en modo ancho. */
 internal val PaneDivider = Color(0xFF1B2538)
+
+/** Aviso informativo breve (no es un error): arriba del contenido, se cierra solo. */
+@Composable
+fun NoticeBanner(message: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.md, vertical = Space.xs),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        border = BorderStroke(1.dp, RadarColors.Cyan.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 2.dp, bottom = 2.dp, end = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = message,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Cerrar aviso",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+}
+
+/** Tarea larga en curso (comprimir un video): barra indeterminada y opción de cancelar. */
+@Composable
+fun BusyBanner(message: String, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.md, vertical = Space.xs),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column {
+            androidx.compose.material3.LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = RadarColors.Cyan
+            )
+            Row(
+                modifier = Modifier.padding(start = 14.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = message,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                TextButton(onClick = onCancel) { Text("Cancelar") }
+            }
+        }
+    }
+}

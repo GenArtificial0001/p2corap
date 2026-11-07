@@ -25,3 +25,7 @@ captures/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Python (servidor)
+__pycache__/
+*.pyc

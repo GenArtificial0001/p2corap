@@ -26,16 +26,74 @@ class VolatileChatRepository {
     val peerAlias: StateFlow<String?> = _peerAlias.asStateFlow()
 
     fun append(id: Long, text: String, isMine: Boolean, hops: Int = 0) {
-        _messages.update {
-            it + Message(id, text, isMine, System.currentTimeMillis(), hops, delivered = false)
-        }
+        add(Message(id, text, isMine, System.currentTimeMillis(), hops, delivered = false))
+    }
+
+    fun appendSticker(id: Long, stickerId: Int, isMine: Boolean, hops: Int = 0) {
+        add(
+            Message(
+                id = id,
+                text = "",
+                isMine = isMine,
+                timestamp = System.currentTimeMillis(),
+                hops = hops,
+                kind = MessageKind.STICKER,
+                stickerId = stickerId
+            )
+        )
+    }
+
+    /**
+     * Mensaje de medio en curso. El emisor ya tiene los bytes ([media] != null);
+     * el receptor los recibirá con [completeMedia].
+     */
+    fun appendMedia(
+        id: Long,
+        kind: MessageKind,
+        isMine: Boolean,
+        media: ByteArray?,
+        durationMs: Int,
+        width: Int,
+        height: Int,
+        progress: Float
+    ) {
+        add(
+            Message(
+                id = id,
+                text = "",
+                isMine = isMine,
+                timestamp = System.currentTimeMillis(),
+                kind = kind,
+                media = media,
+                durationMs = durationMs,
+                width = width,
+                height = height,
+                progress = progress
+            )
+        )
+    }
+
+    fun updateProgress(id: Long, progress: Float) {
+        update(id) { it.copy(progress = progress.coerceIn(0f, 1f)) }
+    }
+
+    /** El receptor terminó de recibir: se guardan los bytes. */
+    fun completeMedia(id: Long, bytes: ByteArray) {
+        update(id) { it.copy(media = bytes, progress = 1f, failed = false) }
+        trimMedia()
+    }
+
+    fun failMedia(id: Long) {
+        update(id) { if (it.progress < 1f) it.copy(failed = true) else it }
+    }
+
+    fun remove(id: Long) {
+        _messages.update { list -> list.filterNot { it.id == id } }
     }
 
     /** Marca como entregado el mensaje propio cuyo ACK llegó. */
     fun markDelivered(id: Long) {
-        _messages.update { list ->
-            list.map { if (it.isMine && it.id == id) it.copy(delivered = true) else it }
-        }
+        update(id) { if (it.isMine) it.copy(delivered = true) else it }
     }
 
     fun setConnected(value: Boolean) {
@@ -60,5 +118,39 @@ class VolatileChatRepository {
         _messages.value = emptyList()
         _connected.value = false
         _peerAlias.value = null
+    }
+
+    private fun add(message: Message) {
+        _messages.update { it + message }
+        trimMedia()
+    }
+
+    private fun update(id: Long, transform: (Message) -> Message) {
+        _messages.update { list -> list.map { if (it.id == id) transform(it) else it } }
+    }
+
+    /**
+     * Tope de RAM para medios retenidos: al superarlo se liberan los más antiguos (el mensaje
+     * queda como «contenido liberado»). Sin esto, una sala activa llenaría la memoria de a poco.
+     */
+    private fun trimMedia() {
+        _messages.update { list ->
+            var total = list.sumOf { it.media?.size ?: 0 }
+            if (total <= MAX_MEDIA_BYTES) return@update list
+            list.map { message ->
+                val size = message.media?.size ?: 0
+                if (total > MAX_MEDIA_BYTES && size > 0 && message.progress >= 1f) {
+                    total -= size
+                    message.copy(media = null, released = true)
+                } else {
+                    message
+                }
+            }
+        }
+    }
+
+    companion object {
+        /** ≈ 6 MB: 60 fotos, o ~10 videos cortos. */
+        const val MAX_MEDIA_BYTES = 6 * 1024 * 1024
     }
 }

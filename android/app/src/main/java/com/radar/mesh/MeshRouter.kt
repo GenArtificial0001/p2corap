@@ -36,12 +36,16 @@ class MeshRouter(
     private val pending = ArrayDeque<PendingPacket>()
 
     /** Crea el paquete de un mensaje propio y lo marca como visto. */
-    fun origin(payload: ByteArray, type: Int = MeshPacket.TYPE_TEXT): MeshPacket {
+    fun origin(
+        payload: ByteArray,
+        type: Int = MeshPacket.TYPE_TEXT,
+        ttl: Int = defaultTtl
+    ): MeshPacket {
         val packet = MeshPacket(
             type = type,
             messageId = kotlin.random.Random.nextLong(),
             originId = selfId,
-            ttl = defaultTtl,
+            ttl = ttl,
             hopCount = 0,
             timestamp = System.currentTimeMillis(),
             payload = payload
@@ -65,7 +69,7 @@ class MeshRouter(
         // Eco de un mensaje propio: ya se entregó localmente al enviarlo.
         if (packet.originId == selfId) return Decision.Drop
 
-        val deliver = packet.type == MeshPacket.TYPE_TEXT || packet.type == MeshPacket.TYPE_ACK
+        val deliver = packet.type in DELIVERABLE_TYPES
 
         // ttl = saltos que todavía puede dar. Con ttl 1 llega y no reenvía.
         val forward = if (packet.ttl > 1) {
@@ -76,7 +80,7 @@ class MeshRouter(
 
         // Solo el texto se guarda para un vecino futuro: los ACK caducan con
         // el vínculo y no tiene sentido reenviarlos minutos después.
-        if (forward != null && packet.type == MeshPacket.TYPE_TEXT) enqueue(forward)
+        if (forward != null && packet.type in STORED_TYPES) enqueue(forward)
 
         return Decision.Relay(deliver, forward)
     }
@@ -118,12 +122,34 @@ class MeshRouter(
     private data class PendingPacket(val packet: MeshPacket, val expiresAtMs: Long)
 
     companion object {
-        /** 3 saltos ≈ 4 dispositivos de extremo a extremo. */
-        const val DEFAULT_TTL = 3
+        /**
+         * 5 saltos ≈ 6 dispositivos de extremo a extremo. Pensado para escenarios sin
+         * infraestructura (apagón, desastre), donde alcanzar más lejos importa más que el
+         * tráfico extra; la deduplicación acota el costo: cada nodo reenvía un mensaje una vez.
+         */
+        const val DEFAULT_TTL = 5
 
-        private const val MAX_SEEN = 512
-        private const val MAX_PENDING = 64
-        private const val SEEN_TTL_MS = 5 * 60_000L
-        private const val PENDING_TTL_MS = 2 * 60_000L
+        /** Tipos que se entregan a la app. Los desconocidos solo se reenvían. */
+        private val DELIVERABLE_TYPES = setOf(
+            MeshPacket.TYPE_TEXT,
+            MeshPacket.TYPE_ACK,
+            MeshPacket.TYPE_STICKER,
+            MeshPacket.TYPE_MEDIA_HEADER,
+            MeshPacket.TYPE_MEDIA_CHUNK
+        )
+
+        /**
+         * Solo lo pequeño se guarda para vecinos futuros. Los medios (cientos de KB) y los ACK
+         * no: reenviarlos minutos después no tendría sentido y agotaría la memoria.
+         */
+        private val STORED_TYPES = setOf(MeshPacket.TYPE_TEXT, MeshPacket.TYPE_STICKER)
+
+        private const val MAX_SEEN = 1024
+        private const val MAX_PENDING = 128
+        // Debe superar a PENDING_TTL_MS: si no, un reenvío tardío volvería a entrar como nuevo.
+        private const val SEEN_TTL_MS = 30 * 60_000L
+        
+        /** Retención store-and-forward: quien llegue a la zona en este lapso recibe lo reciente. */
+        private const val PENDING_TTL_MS = 15 * 60_000L
     }
 }

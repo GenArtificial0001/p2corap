@@ -1,0 +1,15 @@
+# Despliegue en Render (plan gratuito): New + > Blueprint > elegir este repo.
+# El servicio queda en https://radar-relay-XXXX.onrender.com (wss:// incluido).
+services:
+  - type: web
+    name: radar-relay
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    # Opcional: exigir un token compartido (la app lo manda como ?token=...).
+    # envVars:
+    #   - key: RELAY_TOKEN
+    #     value: cambia-esto

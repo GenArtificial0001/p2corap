@@ -54,8 +54,29 @@ data class MeshPacket(
         const val VERSION = 1
         const val TYPE_TEXT = 1
         const val TYPE_ACK = 2
+
+        /** Sticker del catálogo: el payload cifrado lleva solo su id (2 bytes). */
+        const val TYPE_STICKER = 3
+
+        /** Cabecera de una transferencia de medios (foto, audio, video). */
+        const val TYPE_MEDIA_HEADER = 4
+
+        /** Trozo de una transferencia de medios. */
+        const val TYPE_MEDIA_CHUNK = 5
+
         const val HEADER_SIZE = 26
+
+        /** Texto, ACK y stickers. */
         const val MAX_PAYLOAD = 512
+
+        /**
+         * Los trozos de medios son mayores (≈4 KB). El límite sigue acotado para que
+         * un paquete quepa en 255 fragmentos incluso con el MTU mínimo (23 → 17 B).
+         */
+        const val MAX_MEDIA_PAYLOAD = 4_000
+
+        fun maxPayloadFor(type: Int): Int =
+            if (type == TYPE_MEDIA_CHUNK) MAX_MEDIA_PAYLOAD else MAX_PAYLOAD
 
         fun text(
             messageId: Long,
@@ -90,7 +111,7 @@ data class MeshPacket(
             val timestamp = buffer.long
             val length = buffer.short.toInt() and 0xFFFF
 
-            if (length <= 0 || length > MAX_PAYLOAD) return null
+            if (length <= 0 || length > maxPayloadFor(type)) return null
             if (buffer.remaining() < length) return null
 
             val payload = ByteArray(length)
